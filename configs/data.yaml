@@ -1,0 +1,5 @@
+dataset_name: cardd
+raw_dir: data/raw/cardd
+processed_dir: data/processed
+annotations_dir: data/annotations
+image_extensions: [".jpg", ".jpeg", ".png"]
