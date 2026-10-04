@@ -243,3 +243,11 @@ __marimo__/
 .python-version
 *.env
 
+# Image formats
+*.jpg
+*.jpeg
+*.png
+*.bmp
+*.tiff
+*.webp
+*.gif
