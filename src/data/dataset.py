@@ -34,12 +34,16 @@ class DatasetSample:
 
 
 def collate_fn(batch: list[tuple[torch.Tensor, dict[str, Any]]]) -> tuple[list[torch.Tensor], list[dict[str, Any]]]:
-    """Custom collate function for object detection DataLoader.
-
-    Since each image may contain a variable number of bounding boxes,
-    standard stacking fails. This collates images and targets as parallel tuples/lists.
+    """Custom collate function to handle variable-size targets in a batch.
+    
+    Returns lists instead of stacked tensors for variable bounding box counts.
     """
-    return tuple(zip(*batch))
+    images, targets = zip(*batch)
+    return list(images), list(targets)
+
+
+# Alias tương thích ngược
+conllate_fn = collate_fn
 
 
 class VehicleDamageDataset(Dataset):

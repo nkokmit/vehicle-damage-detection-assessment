@@ -24,7 +24,7 @@ def get_train_transforms(
                 rotate=(-10, 10),
                 p=0.4,
             ),
-            A.Resize(img_size[0], img_size[1]),
+            A.Resize(height=img_size[0],width= img_size[1]),
             A.Normalize(mean=mean, std=std),
             ToTensorV2(),
         ],

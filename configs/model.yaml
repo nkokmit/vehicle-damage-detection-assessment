@@ -1,5 +1,18 @@
 model_name: faster_rcnn
-num_classes: 2
+backbone: resnet50_fpn
+pretrained: true
+trainable_backbone_layers: 3
+num_classes: 7
 class_names:
   - background
-  - damage
+  - dent
+  - scratch
+  - crack
+  - glass shatter
+  - lamp broken
+  - tire flat
+min_size: 800
+max_size: 1333
+box_score_thresh: 0.05
+box_nms_thresh: 0.5
+box_detections_per_img: 100
