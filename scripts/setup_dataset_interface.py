@@ -1,4 +1,9 @@
-"""Dataset utilities for vehicle damage detection in CarDD COCO format."""
+import sys
+from pathlib import Path
+
+BASE_DIR = Path(__file__).resolve().parent.parent
+
+DATASET_PY = '''"""Dataset utilities for vehicle damage detection in CarDD COCO format."""
 
 from collections import defaultdict
 from dataclasses import dataclass
@@ -340,3 +345,373 @@ class VehicleDamageDataset(Dataset):
             cv2.imwrite(str(save_path), img)
 
         return img
+'''
+
+TRANSFORMS_PY = '''"""Transform helpers for vehicle damage preprocessing and augmentation."""
+
+from typing import Any, Callable
+import albumentations as A
+from albumentations.pytorch import ToTensorV2
+
+IMAGENET_MEAN = (0.485, 0.456, 0.406)
+IMAGENET_STD = (0.229, 0.224, 0.225)
+
+
+def get_train_transforms(
+    img_size: tuple[int, int] = (800, 800),
+    mean: tuple[float, float, float] = IMAGENET_MEAN,
+    std: tuple[float, float, float] = IMAGENET_STD,
+) -> A.Compose:
+    return A.Compose(
+        [
+            A.HorizontalFlip(p=0.5),
+            A.RandomBrightnessContrast(brightness_limit=0.2, contrast_limit=0.2, p=0.4),
+            A.HueSaturationValue(hue_shift_limit=15, sat_shift_limit=20, val_shift_limit=15, p=0.3),
+            A.Affine(
+                scale=(0.9, 1.1),
+                translate_percent=(-0.05, 0.05),
+                rotate=(-10, 10),
+                p=0.4,
+            ),
+            A.Resize(img_size[0], img_size[1]),
+            A.Normalize(mean=mean, std=std),
+            ToTensorV2(),
+        ],
+        bbox_params=A.BboxParams(
+            format="pascal_voc",
+            label_fields=["category_ids"],
+            min_visibility=0.0,
+        ),
+    )
+
+
+def get_val_transforms(
+    img_size: tuple[int, int] = (800, 800),
+    mean: tuple[float, float, float] = IMAGENET_MEAN,
+    std: tuple[float, float, float] = IMAGENET_STD,
+) -> A.Compose:
+    return A.Compose(
+        [
+            A.Resize(img_size[0], img_size[1]),
+            A.Normalize(mean=mean, std=std),
+            ToTensorV2(),
+        ],
+        bbox_params=A.BboxParams(
+            format="pascal_voc",
+            label_fields=["category_ids"],
+            min_visibility=0.0,
+        ),
+    )
+
+
+def get_default_transform() -> Callable[[Any], Any]:
+    return lambda item: item
+'''
+
+LOADER_PY = '''"""Data loader helper utilities for vehicle damage detection."""
+
+from pathlib import Path
+from typing import Any, Callable
+
+import torch
+from torch.utils.data import DataLoader
+
+from src.data.dataset import VehicleDamageDataset, collate_fn
+from src.data.transforms import get_train_transforms, get_val_transforms
+
+
+def build_dataset(
+    split: str,
+    data_root: str | Path = "data/processed",
+    annotation_file: str | Path | None = None,
+    transforms: Callable[..., Any] | None = None,
+) -> VehicleDamageDataset:
+    root_path = Path(data_root)
+
+    if annotation_file is not None:
+        ann_path = Path(annotation_file)
+        img_dir = root_path
+    elif "CarDD" in str(root_path) or root_path.name == "CarDD_COCO":
+        ann_path = root_path / "annotations" / f"instances_{split}2017.json"
+        img_dir = root_path / f"{split}2017"
+    else:
+        img_dir = root_path / split
+        ann_path = Path("data/annotations") / f"{split}.json"
+
+    return VehicleDamageDataset(
+        root_dir=img_dir,
+        annotation_file=ann_path,
+        transforms=transforms,
+    )
+
+
+def build_cardd_dataset(
+    split: str = "train",
+    cardd_dir: str | Path = "data/CarDD_COCO",
+    img_size: tuple[int, int] = (800, 800),
+    use_augmentation: bool = True,
+) -> VehicleDamageDataset:
+    cardd_path = Path(cardd_dir)
+    img_dir = cardd_path / f"{split}2017"
+    ann_file = cardd_path / "annotations" / f"instances_{split}2017.json"
+
+    if split == "train" and use_augmentation:
+        transforms = get_train_transforms(img_size=img_size)
+    else:
+        transforms = get_val_transforms(img_size=img_size)
+
+    return VehicleDamageDataset(
+        root_dir=img_dir,
+        annotation_file=ann_file,
+        transforms=transforms,
+    )
+
+
+def build_dataloader(
+    dataset: VehicleDamageDataset,
+    batch_size: int = 4,
+    shuffle: bool = True,
+    num_workers: int = 0,
+    pin_memory: bool = True,
+    drop_last: bool = False,
+    collate: Callable[..., Any] = collate_fn,
+) -> DataLoader[Any]:
+    return DataLoader(
+        dataset,
+        batch_size=batch_size,
+        shuffle=shuffle,
+        num_workers=num_workers,
+        pin_memory=pin_memory and torch.cuda.is_available(),
+        drop_last=drop_last,
+        collate_fn=collate,
+    )
+'''
+
+VALIDATE_PY = '''"""Validation helpers for dataset integrity checks."""
+
+import json
+import logging
+from pathlib import Path
+from typing import Any
+
+logger = logging.getLogger(__name__)
+
+
+def validate_paths(data_dir: str | Path, annotation_file: str | Path) -> bool:
+    return Path(data_dir).exists() and Path(annotation_file).exists()
+
+
+def validate_coco_dataset(
+    img_dir: str | Path,
+    annotation_file: str | Path,
+    verbose: bool = True,
+) -> dict[str, Any]:
+    img_path = Path(img_dir)
+    ann_path = Path(annotation_file)
+
+    report: dict[str, Any] = {
+        "valid": True,
+        "img_dir_exists": img_path.exists(),
+        "ann_file_exists": ann_path.exists(),
+        "total_images_in_json": 0,
+        "existing_images": 0,
+        "missing_images": [],
+        "total_annotations": 0,
+        "invalid_bboxes": [],
+        "categories_found": {},
+    }
+
+    if not report["img_dir_exists"] or not report["ann_file_exists"]:
+        report["valid"] = False
+        return report
+
+    try:
+        with open(ann_path, "r", encoding="utf-8") as f:
+            coco_data = json.load(f)
+    except Exception as e:
+        report["valid"] = False
+        report["error"] = f"Failed to parse JSON: {e}"
+        return report
+
+    categories = {cat["id"]: cat["name"] for cat in coco_data.get("categories", [])}
+    report["categories_found"] = categories
+
+    images = coco_data.get("images", [])
+    report["total_images_in_json"] = len(images)
+
+    for img in images:
+        fname = img["file_name"]
+        if (img_path / fname).exists():
+            report["existing_images"] += 1
+        else:
+            report["missing_images"].append(fname)
+
+    annotations = coco_data.get("annotations", [])
+    report["total_annotations"] = len(annotations)
+
+    for ann in annotations:
+        ann_id = ann.get("id")
+        bbox = ann.get("bbox", [])
+        cid = ann.get("category_id")
+
+        if len(bbox) != 4:
+            report["invalid_bboxes"].append({"ann_id": ann_id, "reason": "Length != 4", "bbox": bbox})
+            continue
+
+        x, y, w, h = bbox
+        if w <= 0 or h <= 0 or x < 0 or y < 0:
+            report["invalid_bboxes"].append({"ann_id": ann_id, "reason": "Non-positive dimensions", "bbox": bbox})
+
+        if cid not in categories:
+            report["invalid_bboxes"].append({"ann_id": ann_id, "reason": "Unknown category_id", "category_id": cid})
+
+    if len(report["missing_images"]) > 0 or len(report["invalid_bboxes"]) > 0:
+        report["valid"] = False
+
+    if verbose:
+        logger.info("Dataset Validation for %s:", ann_path.name)
+        logger.info("  Images: %d/%d exist", report["existing_images"], report["total_images_in_json"])
+        logger.info("  Annotations: %d total, %d invalid bboxes", report["total_annotations"], len(report["invalid_bboxes"]))
+        logger.info("  Categories: %s", categories)
+
+    return report
+
+
+if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO)
+    cardd_ann = "data/CarDD_COCO/annotations/instances_train2017.json"
+    cardd_img = "data/CarDD_COCO/train2017"
+
+    result = validate_coco_dataset(cardd_img, cardd_ann)
+    print("Validation passed:", result["valid"])
+'''
+
+INIT_PY = '''"""Data utilities package for vehicle damage detection."""
+
+from src.data.dataset import (
+    DEFAULT_CLASSES,
+    DatasetSample,
+    VehicleDamageDataset,
+    collate_fn,
+)
+from src.data.loader import (
+    build_cardd_dataset,
+    build_dataloader,
+    build_dataset,
+)
+from src.data.transforms import (
+    get_default_transform,
+    get_train_transforms,
+    get_val_transforms,
+)
+from src.data.validate_dataset import (
+    validate_coco_dataset,
+    validate_paths,
+)
+
+__all__ = [
+    "DEFAULT_CLASSES",
+    "DatasetSample",
+    "VehicleDamageDataset",
+    "collate_fn",
+    "build_dataset",
+    "build_cardd_dataset",
+    "build_dataloader",
+    "get_default_transform",
+    "get_train_transforms",
+    "get_val_transforms",
+    "validate_paths",
+    "validate_coco_dataset",
+]
+'''
+
+TEST_DATASET_PY = '''from pathlib import Path
+import pytest
+import torch
+from src.data.loader import build_cardd_dataset, build_dataloader, build_dataset
+from src.data.dataset import collate_fn, VehicleDamageDataset
+
+CARDD_TRAIN_JSON = Path("data/CarDD_COCO/annotations/instances_train2017.json")
+CARDD_IMG_DIR = Path("data/CarDD_COCO/train2017")
+
+
+def test_build_dataset_returns_dataset() -> None:
+    dataset = build_dataset("train")
+    assert dataset.annotation_file.name == "train.json"
+
+
+@pytest.mark.skipif(not CARDD_TRAIN_JSON.exists(), reason="CarDD dataset not present")
+def test_cardd_dataset_loading() -> None:
+    dataset = build_cardd_dataset("train", cardd_dir="data/CarDD_COCO", use_augmentation=False)
+    assert len(dataset) == 2816
+    assert dataset.num_classes == 7
+    assert len(dataset.classes) == 6
+
+
+@pytest.mark.skipif(not CARDD_TRAIN_JSON.exists(), reason="CarDD dataset not present")
+def test_cardd_dataset_sample_format() -> None:
+    dataset = build_cardd_dataset("train", cardd_dir="data/CarDD_COCO", use_augmentation=False)
+    img_tensor, target = dataset[0]
+
+    assert isinstance(img_tensor, torch.Tensor)
+    assert img_tensor.dim() == 3
+    assert img_tensor.shape[0] == 3
+
+    expected_keys = {"boxes", "labels", "image_id", "area", "iscrowd", "orig_size", "file_name"}
+    assert expected_keys.issubset(set(target.keys()))
+
+    boxes = target["boxes"]
+    assert isinstance(boxes, torch.Tensor)
+    assert boxes.dim() == 2
+    assert boxes.shape[1] == 4
+    assert boxes.dtype == torch.float32
+
+    if len(boxes) > 0:
+        assert (boxes[:, 2] >= boxes[:, 0]).all()
+        assert (boxes[:, 3] >= boxes[:, 1]).all()
+
+    labels = target["labels"]
+    assert labels.dtype == torch.int64
+
+
+@pytest.mark.skipif(not CARDD_TRAIN_JSON.exists(), reason="CarDD dataset not present")
+def test_cardd_dataloader_collate() -> None:
+    dataset = build_cardd_dataset("train", cardd_dir="data/CarDD_COCO", use_augmentation=False)
+    loader = build_dataloader(dataset, batch_size=3, shuffle=False, num_workers=0)
+
+    batch_imgs, batch_targets = next(iter(loader))
+    assert len(batch_imgs) == 3
+    assert len(batch_targets) == 3
+    for img, target in zip(batch_imgs, batch_targets):
+        assert isinstance(img, torch.Tensor)
+        assert isinstance(target, dict)
+        assert "boxes" in target
+
+
+@pytest.mark.skipif(not CARDD_TRAIN_JSON.exists(), reason="CarDD dataset not present")
+def test_cardd_dataset_summary() -> None:
+    dataset = build_cardd_dataset("train", cardd_dir="data/CarDD_COCO", use_augmentation=False)
+    summary = dataset.summary()
+    assert summary["total_images"] == 2816
+    assert summary["total_annotations"] == 6211
+    assert "scratch" in summary["class_distribution"]
+'''
+
+def main():
+    files = {
+        BASE_DIR / "src" / "data" / "dataset.py": DATASET_PY,
+        BASE_DIR / "src" / "data" / "transforms.py": TRANSFORMS_PY,
+        BASE_DIR / "src" / "data" / "loader.py": LOADER_PY,
+        BASE_DIR / "src" / "data" / "validate_dataset.py": VALIDATE_PY,
+        BASE_DIR / "src" / "data" / "__init__.py": INIT_PY,
+        BASE_DIR / "tests" / "test_dataset.py": TEST_DATASET_PY,
+    }
+
+    for path, content in files.items():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(content)
+        print(f"Written: {path} ({len(content)} bytes)")
+
+if __name__ == "__main__":
+    main()
