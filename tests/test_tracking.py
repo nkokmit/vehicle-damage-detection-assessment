@@ -26,3 +26,4 @@ def test_mlflow_tracker_lifecycle() -> None:
         assert df["tags.mlflow.runName"].iloc[0] == "test_run_1"
         assert df["params.backbone"].iloc[0] == "resnet50_fpn"
         assert float(df["metrics.loss"].iloc[0]) == pytest.approx(0.42)
+

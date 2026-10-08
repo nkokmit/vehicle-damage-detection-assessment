@@ -38,8 +38,8 @@ class FasterRCNNConfig:
     backbone: str = "resnet50_fpn"  # 'resnet50_fpn' (v1) hoặc 'resnet50_fpn_v2' (v2)
     pretrained: bool = True
     trainable_backbone_layers: int = 3
-    min_size: int = 800
-    max_size: int = 1333
+    min_size: int = 512
+    max_size: int = 512
     box_score_thresh: float = 0.05
     box_nms_thresh: float = 0.5
     box_detections_per_img: int = 100

@@ -1,6 +1,33 @@
 seed: 42
-device: auto
-epochs: 10
-batch_size: 4
+device: cuda
+epochs: 40
+batch_size: 2
+image_size: 512
 num_workers: 2
-learning_rate: 0.001
+
+# Model image sizing (cả min max)
+min_size: 512
+max_size: 512
+
+# Optimizer settings
+optimizer: SGD
+learning_rate: 0.005
+momentum: 0.9
+weight_decay: 0.0005
+backbone_lr_ratio: 0.1
+
+# Learning rate scheduler
+scheduler:
+  type: step
+  step_size: 5
+  gamma: 0.1
+
+# Acceleration & Memory Optimization
+use_amp: true
+gradient_accumulation_steps: 2
+clip_grad_norm: 10.0
+
+# Checkpoints & Logging
+checkpoint_dir: artifacts/checkpoints/faster_rcnn
+save_best_only: true
+log_interval: 10

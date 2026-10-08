@@ -19,12 +19,31 @@ logger = logging.getLogger(__name__)
 class TrainerConfig:
     """Trainer configuration settings."""
 
-    epochs: int = 5
-    learning_rate: float = 0.001
+    epochs: int = 40
+    batch_size: int = 2
+    image_size: int = 512
+    learning_rate: float = 0.005
     weight_decay: float = 0.0005
     momentum: float = 0.9
+    optimizer: str = "SGD"
     backbone_lr_ratio: float = 0.1
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
+
+    # Learning rate scheduler
+    scheduler_type: str = "step"  # "step" hoặc "cosine"
+    scheduler_step_size: int = 5
+    scheduler_gamma: float = 0.1
+
+    # Mixed Precision (AMP) & Gradient Accumulation
+    use_amp: bool = True
+    gradient_accumulation_steps: int = 2
+    clip_grad_norm: float = 10.0
+
+    # Model image sizing
+    min_size: int = 512
+    max_size: int = 512
+
+    # Checkpoint & logging
     checkpoint_dir: str = "artifacts/checkpoints"
     save_best_only: bool = True
     max_train_batches: int | None = None  # Giới hạn số batch mỗi epoch (cho test/dry-run)
@@ -33,7 +52,7 @@ class TrainerConfig:
 
 
 class Trainer:
-    """Trainer engine supporting PyTorch detection models and MLflow experiment logging."""
+    """Trainer engine supporting PyTorch detection models, AMP, Gradient Accumulation, and MLflow."""
 
     def __init__(
         self,
@@ -58,24 +77,47 @@ class Trainer:
             lr=self.config.learning_rate,
             backbone_lr_ratio=self.config.backbone_lr_ratio,
         )
-        self.optimizer = torch.optim.SGD(
-            param_groups,
-            momentum=self.config.momentum,
-            weight_decay=self.config.weight_decay,
-        )
+        if self.config.optimizer.upper() == "SGD":
+            self.optimizer = torch.optim.SGD(
+                param_groups,
+                momentum=self.config.momentum,
+                weight_decay=self.config.weight_decay,
+            )
+        elif self.config.optimizer.upper() == "ADAMW":
+            self.optimizer = torch.optim.AdamW(
+                param_groups,
+                weight_decay=self.config.weight_decay,
+            )
+        else:
+            raise ValueError(f"Unsupported optimizer: '{self.config.optimizer}'. Choose 'SGD' or 'AdamW'.")
 
         # 2. Learning rate scheduler
-        self.lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-            self.optimizer,
-            T_max=self.config.epochs,
-            eta_min=1e-6,
-        )
+        if self.config.scheduler_type.lower() == "step":
+            self.lr_scheduler = torch.optim.lr_scheduler.StepLR(
+                self.optimizer,
+                step_size=self.config.scheduler_step_size,
+                gamma=self.config.scheduler_gamma,
+            )
+        elif self.config.scheduler_type.lower() == "cosine":
+            self.lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+                self.optimizer,
+                T_max=self.config.epochs,
+                eta_min=1e-6,
+            )
+        else:
+            raise ValueError(f"Unsupported scheduler_type: '{self.config.scheduler_type}'. Choose 'step' or 'cosine'.")
+
+        # 3. Mixed Precision (AMP) & Gradient Accumulation
+        is_cuda = self.device.type == "cuda"
+        self.use_amp = bool(self.config.use_amp and is_cuda)
+        self.scaler = torch.amp.GradScaler("cuda" if is_cuda else "cpu", enabled=self.use_amp)
+        self.accumulation_steps = max(1, self.config.gradient_accumulation_steps)
 
         self.best_val_loss = float("inf")
         self.history: list[dict[str, Any]] = []
 
     def train_one_epoch(self, epoch: int) -> dict[str, float]:
-        """Train model for a single epoch."""
+        """Train model for a single epoch with Mixed Precision (AMP) and Gradient Accumulation."""
         if self.train_loader is None:
             raise ValueError("train_loader must be provided for training.")
 
@@ -84,6 +126,11 @@ class Trainer:
         loss_components: dict[str, float] = {}
         num_batches = 0
         start_time = time.time()
+        self.optimizer.zero_grad()
+
+        num_total_batches = len(self.train_loader)
+        if self.config.max_train_batches:
+            num_total_batches = min(num_total_batches, self.config.max_train_batches)
 
         for batch_idx, (images, targets) in enumerate(self.train_loader):
             if self.config.max_train_batches and batch_idx >= self.config.max_train_batches:
@@ -93,19 +140,26 @@ class Trainer:
             images = [img.to(self.device) for img in images]
             targets = [{k: (v.to(self.device) if isinstance(v, torch.Tensor) else v) for k, v in t.items()} for t in targets]
 
-            self.optimizer.zero_grad()
+            # Forward pass under AMP autocast
+            with torch.amp.autocast(device_type=self.device.type, enabled=self.use_amp):
+                # Faster R-CNN tự động tính multi-task loss khi model.train()
+                loss_dict = self.model(images, targets)
+                losses = sum(loss for loss in loss_dict.values())
+                # Scale loss theo gradient accumulation steps
+                loss_scaled = losses / self.accumulation_steps
 
-            # Forward pass: Faster R-CNN tự động trả về dict các loss khi ở mode train()
-            loss_dict = self.model(images, targets)
+            # Backward pass với GradScaler
+            self.scaler.scale(loss_scaled).backward()
 
-            # Tính tổng loss
-            losses = sum(loss for loss in loss_dict.values())
-            losses.backward()
-
-            # Gradient clipping để đảm bảo ổn định
-            torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=10.0)
-
-            self.optimizer.step()
+            # Optimizer step mỗi accumulation_steps hoặc khi hết batch trong epoch
+            is_step = ((batch_idx + 1) % self.accumulation_steps == 0) or ((batch_idx + 1) == num_total_batches)
+            if is_step:
+                if self.config.clip_grad_norm > 0:
+                    self.scaler.unscale_(self.optimizer)
+                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=self.config.clip_grad_norm)
+                self.scaler.step(self.optimizer)
+                self.scaler.update()
+                self.optimizer.zero_grad()
 
             total_loss += losses.item()
             for k, v in loss_dict.items():
@@ -113,14 +167,14 @@ class Trainer:
 
             num_batches += 1
 
-            if (batch_idx + 1) % self.config.log_interval == 0 or (batch_idx + 1) == len(self.train_loader):
+            if (batch_idx + 1) % self.config.log_interval == 0 or (batch_idx + 1) == num_total_batches:
                 avg_batch_loss = total_loss / num_batches
                 logger.info(
                     "Epoch [%d/%d] Batch [%d/%d] - Loss: %.4f",
                     epoch,
                     self.config.epochs,
                     batch_idx + 1,
-                    len(self.train_loader),
+                    num_total_batches,
                     avg_batch_loss,
                 )
 
@@ -128,10 +182,11 @@ class Trainer:
 
         elapsed = time.time() - start_time
         avg_train_loss = total_loss / max(1, num_batches)
+        current_lr = self.optimizer.param_groups[-1]["lr"]
         metrics = {
             "train_loss": avg_train_loss,
             "train_time_sec": elapsed,
-            "lr": self.optimizer.param_groups[-1]["lr"],
+            "lr": current_lr,
         }
         for k, v in loss_components.items():
             metrics[f"train_{k}"] = v / max(1, num_batches)
@@ -144,7 +199,7 @@ class Trainer:
         if self.val_loader is None:
             return {}
 
-        # Chú ý: Faster R-CNN trong torchvision khi model.eval() chỉ trả về detections.
+        # Faster R-CNN trong torchvision khi model.eval() chỉ trả về detections.
         # Để tính validation loss, ta tạm thời để model.train() nhưng không tính grad và không cập nhật weights!
         self.model.train()
         total_val_loss = 0.0
@@ -159,8 +214,9 @@ class Trainer:
             images = [img.to(self.device) for img in images]
             targets = [{k: (v.to(self.device) if isinstance(v, torch.Tensor) else v) for k, v in t.items()} for t in targets]
 
-            loss_dict = self.model(images, targets)
-            losses = sum(loss for loss in loss_dict.values())
+            with torch.amp.autocast(device_type=self.device.type, enabled=self.use_amp):
+                loss_dict = self.model(images, targets)
+                losses = sum(loss for loss in loss_dict.values())
 
             total_val_loss += losses.item()
             for k, v in loss_dict.items():
@@ -183,11 +239,34 @@ class Trainer:
     def train(self) -> dict[str, Any]:
         """Execute the full training loop across configured epochs."""
         logger.info(
-            "Starting training on %s: %d epochs, initial lr=%.4f",
+            "Starting training on %s: %d epochs, batch_size=%d, lr=%.4f (AMP=%s, GradAccum=%d)",
             self.device,
             self.config.epochs,
+            self.config.batch_size,
             self.config.learning_rate,
+            self.use_amp,
+            self.accumulation_steps,
         )
+
+        if self.tracker:
+            try:
+                self.tracker.log_params({
+                    "epochs": self.config.epochs,
+                    "batch_size": self.config.batch_size,
+                    "image_size": self.config.image_size,
+                    "learning_rate": self.config.learning_rate,
+                    "weight_decay": self.config.weight_decay,
+                    "momentum": self.config.momentum,
+                    "optimizer": self.config.optimizer,
+                    "scheduler_type": self.config.scheduler_type,
+                    "scheduler_step_size": self.config.scheduler_step_size,
+                    "scheduler_gamma": self.config.scheduler_gamma,
+                    "use_amp": self.use_amp,
+                    "gradient_accumulation_steps": self.accumulation_steps,
+                    "device": str(self.device),
+                })
+            except Exception as e:
+                logger.debug("Parameters may already be logged in MLflow run: %s", e)
 
         for epoch in range(1, self.config.epochs + 1):
             epoch_start = time.time()
@@ -208,10 +287,12 @@ class Trainer:
 
             val_loss = val_metrics.get("val_loss", train_metrics["train_loss"])
             logger.info(
-                "Epoch %d Complete | Train Loss: %.4f | Val Loss: %.4f | Time: %.1fs",
+                "Epoch [%d/%d] Complete | Train Loss: %.4f | Val Loss: %.4f | LR: %.6f | Time: %.1fs",
                 epoch,
+                self.config.epochs,
                 train_metrics["train_loss"],
                 val_loss,
+                train_metrics.get("lr", self.config.learning_rate),
                 epoch_time,
             )
 
