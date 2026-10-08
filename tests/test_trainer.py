@@ -77,3 +77,4 @@ def test_trainer_amp_gradient_accumulation() -> None:
         val_metrics = trainer.evaluate()
         assert "val_loss" in val_metrics
         assert val_metrics["val_loss"] > 0
+
