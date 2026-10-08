@@ -1,6 +1,16 @@
-"""MLflow tracking abstraction placeholder."""
+"""MLflow tracking abstraction for vehicle damage detection experiments."""
 
+from contextlib import contextmanager
 from dataclasses import dataclass
+import logging
+from pathlib import Path
+from typing import Any, Iterator
+
+import mlflow
+import pandas as pd
+import torch
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(slots=True)
@@ -12,12 +22,122 @@ class MLflowConfig:
 
 
 class MLflowTracker:
-    """Lightweight tracker abstraction."""
+    """Production MLflow tracker supporting params, metrics, artifacts, and run comparisons."""
 
     def __init__(self, config: MLflowConfig | None = None) -> None:
         self.config = config or MLflowConfig()
+        # Đặt tracking URI cục bộ hoặc server từ xa
+        mlflow.set_tracking_uri(self.config.tracking_uri)
+        # Tạo hoặc đặt experiment
+        self.experiment = mlflow.set_experiment(self.config.experiment_name)
+        self.active_run: mlflow.ActiveRun | None = None
+        logger.info(
+            "MLflow tracking initialized: URI=%s, Experiment=%s (ID=%s)",
+            self.config.tracking_uri,
+            self.config.experiment_name,
+            self.experiment.experiment_id,
+        )
 
-    def log_params(self, params: dict[str, object]) -> dict[str, object]:
-        """Return params as a no-op log action."""
+    def start_run(
+        self,
+        run_name: str | None = None,
+        tags: dict[str, str] | None = None,
+        description: str | None = None,
+    ) -> mlflow.ActiveRun:
+        """Start a new MLflow run."""
+        run_tags = tags or {}
+        if description:
+            run_tags["mlflow.note.content"] = description
 
-        return dict(params)
+        self.active_run = mlflow.start_run(
+            experiment_id=self.experiment.experiment_id,
+            run_name=run_name,
+            tags=run_tags,
+        )
+        logger.info("Started MLflow run: %s (ID: %s)", run_name, self.active_run.info.run_id)
+        return self.active_run
+
+    def end_run(self, status: str = "FINISHED") -> None:
+        """End the currently active MLflow run."""
+        if self.active_run is not None:
+            mlflow.end_run(status=status)
+            logger.info("Ended MLflow run: %s", self.active_run.info.run_id)
+            self.active_run = None
+
+    @contextmanager
+    def run(
+        self,
+        run_name: str | None = None,
+        tags: dict[str, str] | None = None,
+        description: str | None = None,
+    ) -> Iterator["MLflowTracker"]:
+        """Context manager for an MLflow run."""
+        self.start_run(run_name=run_name, tags=tags, description=description)
+        try:
+            yield self
+        except Exception:
+            self.end_run(status="FAILED")
+            raise
+        else:
+            self.end_run(status="FINISHED")
+
+    def log_param(self, key: str, value: Any) -> None:
+        """Log a single hyperparameter."""
+        mlflow.log_param(key, value)
+
+    def log_params(self, params: dict[str, Any]) -> None:
+        """Log multiple hyperparameters."""
+        # Convert non-primitive values to strings for MLflow safety
+        clean_params = {k: str(v) if isinstance(v, (list, tuple, dict)) else v for k, v in params.items()}
+        mlflow.log_params(clean_params)
+
+    def log_metric(self, key: str, value: float, step: int | None = None) -> None:
+        """Log a single metric value."""
+        mlflow.log_metric(key, float(value), step=step)
+
+    def log_metrics(self, metrics: dict[str, float], step: int | None = None) -> None:
+        """Log multiple metrics at a given step/epoch."""
+        clean_metrics = {k: float(v) for k, v in metrics.items()}
+        mlflow.log_metrics(clean_metrics, step=step)
+
+    def log_artifact(self, local_path: str | Path, artifact_path: str | None = None) -> None:
+        """Log a local file or directory as an MLflow artifact."""
+        path_obj = Path(local_path)
+        if path_obj.exists():
+            if path_obj.is_dir():
+                mlflow.log_artifacts(str(path_obj), artifact_path=artifact_path)
+            else:
+                mlflow.log_artifact(str(path_obj), artifact_path=artifact_path)
+        else:
+            logger.warning("Artifact not found to log: %s", local_path)
+
+    def log_model(self, model: torch.nn.Module, artifact_path: str = "model") -> None:
+        """Log PyTorch model to MLflow."""
+        try:
+            mlflow.pytorch.log_model(model, artifact_path=artifact_path)
+        except Exception as e:
+            logger.warning("Failed to log PyTorch model artifact: %s", e)
+
+    def get_runs_dataframe(self) -> pd.DataFrame:
+        """Retrieve all runs from the current experiment as a pandas DataFrame."""
+        return mlflow.search_runs(experiment_ids=[self.experiment.experiment_id])
+
+    def compare_runs(self, run_names: list[str] | None = None) -> pd.DataFrame:
+        """Generate a comparison table across runs in the experiment.
+
+        Args:
+            run_names: Optional filter for specific run names.
+
+        Returns:
+            DataFrame comparing parameters and key metrics across runs.
+        """
+        df = self.get_runs_dataframe()
+        if df.empty:
+            return pd.DataFrame()
+
+        if run_names:
+            df = df[df["tags.mlflow.runName"].isin(run_names)]
+
+        # Lọc các cột quan trọng
+        cols = [c for c in df.columns if c.startswith("params.") or c.startswith("metrics.") or c in ["run_id", "tags.mlflow.runName", "status", "start_time"]]
+        return df[cols]

@@ -10,7 +10,9 @@ import torch.nn as nn
 from torchvision.models.detection import (
     FasterRCNN,
     FasterRCNN_ResNet50_FPN_Weights,
+    FasterRCNN_ResNet50_FPN_V2_Weights,
     fasterrcnn_resnet50_fpn,
+    fasterrcnn_resnet50_fpn_v2,
 )
 from torchvision.models.detection.faster_rcnn import FastRCNNPredictor
 
@@ -33,6 +35,7 @@ class FasterRCNNConfig:
     """Configuration for Faster R-CNN model."""
 
     num_classes: int = 7
+    backbone: str = "resnet50_fpn"  # 'resnet50_fpn' (v1) hoặc 'resnet50_fpn_v2' (v2)
     pretrained: bool = True
     trainable_backbone_layers: int = 3
     min_size: int = 800
@@ -47,10 +50,14 @@ def build_faster_rcnn_model(
 ) -> FasterRCNN:
     """Build a Faster R-CNN model with a COCO-pretrained backbone and custom 7-class head.
 
+    Supports:
+        - Model 1: 'resnet50_fpn' (Faster R-CNN ResNet-50 FPN V1)
+        - Model 2: 'resnet50_fpn_v2' (Faster R-CNN ResNet-50 FPN V2 with improved FPN and SyncBN)
+
     Workflow:
-        COCO pretrained model (fasterrcnn_resnet50_fpn)
+        COCO pretrained model (ResNet-50-FPN v1 or v2)
                 ↓
-        Faster R-CNN ResNet-50-FPN
+        Faster R-CNN Backbone + RPN
                 ↓
         Extract in_features (1024) from ROI Heads
                 ↓
@@ -65,37 +72,59 @@ def build_faster_rcnn_model(
         Configured FasterRCNN model.
     """
     cfg = config or FasterRCNNConfig()
+    backbone_name = cfg.backbone.lower()
 
-    # 1. Tải mô hình Faster R-CNN ResNet-50-FPN pretrained từ COCO
-    if cfg.pretrained:
-        weights = FasterRCNN_ResNet50_FPN_Weights.DEFAULT
-        logger.info("Loading Faster R-CNN with COCO pretrained weights: %s", weights)
+    if backbone_name in ("resnet50_fpn_v2", "resnet50_v2", "v2"):
+        # Model 2: Faster R-CNN ResNet-50 FPN V2
+        weights = FasterRCNN_ResNet50_FPN_V2_Weights.DEFAULT if cfg.pretrained else None
+        logger.info(
+            "Building Faster R-CNN ResNet-50 FPN V2 (pretrained=%s, weights=%s)",
+            cfg.pretrained,
+            weights,
+        )
+        model = fasterrcnn_resnet50_fpn_v2(
+            weights=weights,
+            trainable_backbone_layers=cfg.trainable_backbone_layers,
+            min_size=cfg.min_size,
+            max_size=cfg.max_size,
+            box_score_thresh=cfg.box_score_thresh,
+            box_nms_thresh=cfg.box_nms_thresh,
+            box_detections_per_img=cfg.box_detections_per_img,
+        )
+    elif backbone_name in ("resnet50_fpn", "resnet50", "v1"):
+        # Model 1: Faster R-CNN ResNet-50 FPN V1 (classic baseline)
+        weights = FasterRCNN_ResNet50_FPN_Weights.DEFAULT if cfg.pretrained else None
+        logger.info(
+            "Building Faster R-CNN ResNet-50 FPN V1 (pretrained=%s, weights=%s)",
+            cfg.pretrained,
+            weights,
+        )
+        model = fasterrcnn_resnet50_fpn(
+            weights=weights,
+            trainable_backbone_layers=cfg.trainable_backbone_layers,
+            min_size=cfg.min_size,
+            max_size=cfg.max_size,
+            box_score_thresh=cfg.box_score_thresh,
+            box_nms_thresh=cfg.box_nms_thresh,
+            box_detections_per_img=cfg.box_detections_per_img,
+        )
     else:
-        weights = None
-        logger.info("Initializing Faster R-CNN without pretrained weights.")
+        raise ValueError(
+            f"Unsupported backbone: '{cfg.backbone}'. Choose 'resnet50_fpn' (v1) or 'resnet50_fpn_v2' (v2)."
+        )
 
-    model = fasterrcnn_resnet50_fpn(
-        weights=weights,
-        trainable_backbone_layers=cfg.trainable_backbone_layers,
-        min_size=cfg.min_size,
-        max_size=cfg.max_size,
-        box_score_thresh=cfg.box_score_thresh,
-        box_nms_thresh=cfg.box_nms_thresh,
-        box_detections_per_img=cfg.box_detections_per_img,
-    )
-
-    # 2. Lấy số chiều đặc trưng đầu vào của lớp phân loại hiện tại (1024)
+    # Lấy số chiều đặc trưng đầu vào của box predictor hiện tại (1024)
     in_features = model.roi_heads.box_predictor.cls_score.in_features
 
-    # 3. Thay thế classifier head bằng FastRCNNPredictor mới với 7 classes:
-    #    0: background, 1: dent, 2: scratch, 3: crack,
-    #    4: glass shatter, 5: lamp broken, 6: tire flat
+    # Thay thế classifier head bằng FastRCNNPredictor mới với 7 classes:
+    # 0: background, 1: dent, 2: scratch, 3: crack, 4: glass shatter, 5: lamp broken, 6: tire flat
     model.roi_heads.box_predictor = FastRCNNPredictor(
         in_channels=in_features,
         num_classes=cfg.num_classes,
     )
     logger.info(
-        "Replaced box_predictor: in_features=%d -> num_classes=%d",
+        "Replaced box_predictor [%s]: in_features=%d -> num_classes=%d",
+        cfg.backbone,
         in_features,
         cfg.num_classes,
     )
@@ -168,6 +197,12 @@ class FasterRCNNModel(nn.Module):
             {"params": backbone_params, "lr": lr * backbone_lr_ratio},
             {"params": head_params, "lr": lr},
         ]
+
+    def count_parameters(self) -> dict[str, int]:
+        """Count total and trainable parameters in the model."""
+        total = sum(p.numel() for p in self.parameters())
+        trainable = sum(p.numel() for p in self.parameters() if p.requires_grad)
+        return {"total_parameters": total, "trainable_parameters": trainable}
 
     @torch.no_grad()
     def predict(

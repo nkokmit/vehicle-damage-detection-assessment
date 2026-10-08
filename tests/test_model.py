@@ -6,9 +6,10 @@ from src.models.model_factory import create_model
 
 
 def test_create_model_default() -> None:
-    # Sử dụng pretrained=False để unit test chạy nhanh và offline
-    model = create_model(pretrained=False)
+    # Model 1: ResNet-50 FPN V1
+    model = create_model(backbone="resnet50_fpn", pretrained=False)
     assert model.config.num_classes == 7
+    assert model.config.backbone == "resnet50_fpn"
     assert len(model.class_names) == 7
     assert model.class_names[0] == "background"
     assert model.class_names[1] == "dent"
@@ -17,6 +18,17 @@ def test_create_model_default() -> None:
     box_predictor = model.model.roi_heads.box_predictor
     assert box_predictor.cls_score.out_features == 7
     assert box_predictor.bbox_pred.out_features == 28  # 7 classes * 4 coords
+
+
+def test_create_model_v2() -> None:
+    # Model 2: ResNet-50 FPN V2
+    model_v2 = create_model(backbone="resnet50_fpn_v2", pretrained=False)
+    assert model_v2.config.num_classes == 7
+    assert model_v2.config.backbone == "resnet50_fpn_v2"
+
+    box_predictor = model_v2.model.roi_heads.box_predictor
+    assert box_predictor.cls_score.out_features == 7
+    assert box_predictor.bbox_pred.out_features == 28
 
 
 def test_model_train_forward_pass() -> None:

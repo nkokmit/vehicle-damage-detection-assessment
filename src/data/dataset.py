@@ -184,7 +184,7 @@ class VehicleDamageDataset(Dataset):
         image = cv2.imread(str(img_path))
         if image is None:
             raise ValueError(f"Failed to read image at: {img_path}")
-        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB) # chuyển sang RGB
         h_orig, w_orig = image.shape[:2]
 
         raw_anns = self.annotations_map.get(img_id, [])
@@ -209,7 +209,7 @@ class VehicleDamageDataset(Dataset):
                 continue
 
             category_id = int(ann["category_id"])
-            area = float(ann.get("area", (x2 - x1) * (y2 - y1)))
+            area = float(ann.get("area", (x2 - x1) * (y2 - y1))) 
             iscrowd = int(ann.get("iscrowd", 0))
 
             boxes_list.append([x1, y1, x2, y2])
@@ -220,7 +220,7 @@ class VehicleDamageDataset(Dataset):
         # Áp dụng Data Transforms / Augmentations
         if self.transforms is not None:
             if hasattr(self.transforms, "processors") or hasattr(self.transforms, "__call__"):
-                try:
+                try: # nhánh chính thực hiện với Albumentations cần truyền 3 tham số thay vì chỉ 1 tham số ảnh
                     transformed = self.transforms(
                         image=image,
                         bboxes=boxes_list,
@@ -229,7 +229,7 @@ class VehicleDamageDataset(Dataset):
                     image = transformed["image"]
                     boxes_list = [list(b) for b in transformed["bboxes"]]
                     labels_list = [int(cid) for cid in transformed["category_ids"]]
-                except TypeError:
+                except TypeError: # nhánh dự phòng nếu transform chỉ nhận 1 tham số (ví dụ: ToTensorV2)
                     image = self.transforms(image)
 
         # Đảm bảo image là PyTorch Tensor [C, H, W] chuẩn hóa
@@ -240,6 +240,7 @@ class VehicleDamageDataset(Dataset):
         else:
             image_tensor = torch.as_tensor(image).permute(2, 0, 1).float()
 
+        # ảnh ban đầu (H, W, C) numpy array hoặc pil object không rõ ràng cần chuyển sang pytorch hoặc đổi trục sang (C,H,W) v
         # Tạo Tensor cho Bounding Boxes và Labels
         if len(boxes_list) > 0:
             boxes_tensor = torch.as_tensor(boxes_list, dtype=torch.float32).reshape(-1, 4)

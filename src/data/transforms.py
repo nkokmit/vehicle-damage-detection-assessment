@@ -12,13 +12,13 @@ def get_train_transforms(
     img_size: tuple[int, int] = (800, 800),
     mean: tuple[float, float, float] = IMAGENET_MEAN,
     std: tuple[float, float, float] = IMAGENET_STD,
-) -> A.Compose:
+) -> A.Compose: #pinepline a compose
     return A.Compose(
         [
-            A.HorizontalFlip(p=0.5),
-            A.RandomBrightnessContrast(brightness_limit=0.2, contrast_limit=0.2, p=0.4),
-            A.HueSaturationValue(hue_shift_limit=15, sat_shift_limit=20, val_shift_limit=15, p=0.3),
-            A.Affine(
+            A.HorizontalFlip(p=0.5), #lật 
+            A.RandomBrightnessContrast(brightness_limit=0.2, contrast_limit=0.2, p=0.4), #độ sáng và độ tương phản
+            A.HueSaturationValue(hue_shift_limit=15, sat_shift_limit=20, val_shift_limit=15, p=0.3),#độ bão hòa và giá trị
+            A.Affine( # scale, translate, rotate
                 scale=(0.9, 1.1),
                 translate_percent=(-0.05, 0.05),
                 rotate=(-10, 10),
@@ -28,7 +28,7 @@ def get_train_transforms(
             A.Normalize(mean=mean, std=std),
             ToTensorV2(),
         ],
-        bbox_params=A.BboxParams(
+        bbox_params=A.BboxParams( # khai báo này để xử lý các bounding box khi áp dụng các phép biến đổi hình ảnh trên
             format="pascal_voc",
             label_fields=["category_ids"],
             min_visibility=0.0,
