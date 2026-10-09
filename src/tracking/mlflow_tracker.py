@@ -44,18 +44,20 @@ class MLflowTracker:
         run_name: str | None = None,
         tags: dict[str, str] | None = None,
         description: str | None = None,
+        run_id: str | None = None,
     ) -> mlflow.ActiveRun:
-        """Start a new MLflow run."""
+        """Start or resume an MLflow run."""
         run_tags = tags or {}
         if description:
             run_tags["mlflow.note.content"] = description
 
         self.active_run = mlflow.start_run(
-            experiment_id=self.experiment.experiment_id,
+            run_id=run_id,
+            experiment_id=self.experiment.experiment_id if run_id is None else None,
             run_name=run_name,
             tags=run_tags,
         )
-        logger.info("Started MLflow run: %s (ID: %s)", run_name, self.active_run.info.run_id)
+        logger.info("Started/Resumed MLflow run: %s (ID: %s)", run_name or run_id, self.active_run.info.run_id)
         return self.active_run
 
     def end_run(self, status: str = "FINISHED") -> None:
@@ -71,9 +73,10 @@ class MLflowTracker:
         run_name: str | None = None,
         tags: dict[str, str] | None = None,
         description: str | None = None,
+        run_id: str | None = None,
     ) -> Iterator["MLflowTracker"]:
         """Context manager for an MLflow run."""
-        self.start_run(run_name=run_name, tags=tags, description=description)
+        self.start_run(run_name=run_name, tags=tags, description=description, run_id=run_id)
         try:
             yield self
         except Exception:
@@ -84,13 +87,19 @@ class MLflowTracker:
 
     def log_param(self, key: str, value: Any) -> None:
         """Log a single hyperparameter."""
-        mlflow.log_param(key, value)
+        try:
+            mlflow.log_param(key, value)
+        except Exception as e:
+            logger.debug("Parameter %s already exists: %s", key, e)
 
     def log_params(self, params: dict[str, Any]) -> None:
-        """Log multiple hyperparameters."""
+        """Log multiple hyperparameters safely (ignoring existing ones on resume)."""
         # Convert non-primitive values to strings for MLflow safety
         clean_params = {k: str(v) if isinstance(v, (list, tuple, dict)) else v for k, v in params.items()}
-        mlflow.log_params(clean_params)
+        try:
+            mlflow.log_params(clean_params)
+        except Exception as e:
+            logger.debug("Parameters may already exist in resumed run: %s", e)
 
     def log_metric(self, key: str, value: float, step: int | None = None) -> None:
         """Log a single metric value."""

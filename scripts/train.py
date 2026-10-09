@@ -64,6 +64,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--num-workers", type=int, default=None, help="DataLoader num workers")
     parser.add_argument("--run-name", type=str, default=None, help="MLflow run name")
     parser.add_argument("--resume", type=str, default=None, help="Path to checkpoint .pth to resume training")
+    parser.add_argument("--run-id", type=str, default=None, help="Existing MLflow run ID to resume logging into")
     parser.add_argument("--eval-map-interval", type=int, default=None, help="Interval (epochs) to evaluate mAP (default 5, 0 to disable)")
     parser.add_argument("--dry-run", action="store_true", help="Quick run with 4 train batches and 2 val batches for testing")
 
@@ -218,9 +219,18 @@ def main() -> None:
         tracker=tracker,
     )
 
+    resume_run_id = args.run_id
     if args.resume:
         logger.info("Resuming training from checkpoint: %s", args.resume)
         trainer.load_checkpoint(args.resume)
+        if not resume_run_id:
+            try:
+                chkpt_dict = torch.load(args.resume, map_location="cpu", weights_only=False)
+                resume_run_id = chkpt_dict.get("mlflow_run_id")
+                if resume_run_id:
+                    logger.info("Auto-detected MLflow run ID to resume into: %s", resume_run_id)
+            except Exception as e:
+                logger.debug("Could not read mlflow_run_id from checkpoint: %s", e)
 
     tags = {
         "model.family": "Faster R-CNN",
@@ -232,7 +242,12 @@ def main() -> None:
     }
 
     # 5. Huấn luyện mô hình và log vào MLflow
-    with tracker.run(run_name=run_name, tags=tags, description=f"Faster R-CNN {backbone} trained with AMP & Gradient Accumulation"):
+    with tracker.run(
+        run_name=run_name,
+        tags=tags,
+        description=f"Faster R-CNN {backbone} trained with AMP & Gradient Accumulation",
+        run_id=resume_run_id,
+    ):
         tracker.log_params({
             "model_architecture": "faster_rcnn",
             "backbone": backbone,

@@ -305,6 +305,7 @@ class Trainer:
             should_eval_map = self.val_loader and self.config.eval_map_interval > 0 and (
                 epoch % self.config.eval_map_interval == 0 or epoch == self.config.epochs
             )
+            run_id = self.tracker.active_run.info.run_id if (self.tracker and self.tracker.active_run) else None
             if should_eval_map:
                 from src.evaluation.evaluator import Evaluator, EvaluatorConfig
 
@@ -344,6 +345,7 @@ class Trainer:
                             "val_mAP_50": self.best_val_map,
                             "val_mAP_50_95": eval_results["mAP_50_95"],
                             "config": asdict(self.config),
+                            "mlflow_run_id": run_id,
                         },
                         best_map_path,
                     )
@@ -380,24 +382,26 @@ class Trainer:
                         "val_loss": self.best_val_loss,
                         "val_mAP_50": self.best_val_map,
                         "config": asdict(self.config),
+                        "mlflow_run_id": run_id,
                     },
                     best_path,
                 )
                 logger.info("Saved new best loss checkpoint to: %s (Val Loss: %.4f)", best_path, self.best_val_loss)
 
-        # 6. Lưu Checkpoint Epoch cuối cùng
-        latest_path = self.checkpoint_path / "latest_model.pth"
-        torch.save(
-            {
-                "epoch": self.config.epochs,
-                "model_state_dict": self.model.state_dict(),
-                "optimizer_state_dict": self.optimizer.state_dict(),
-                "val_loss": val_loss,
-                "val_mAP_50": self.best_val_map,
-                "history": self.history,
-            },
-            latest_path,
-        )
+            # 6. Lưu Checkpoint mới nhất sau mỗi Epoch
+            latest_path = self.checkpoint_path / "latest_model.pth"
+            torch.save(
+                {
+                    "epoch": epoch,
+                    "model_state_dict": self.model.state_dict(),
+                    "optimizer_state_dict": self.optimizer.state_dict(),
+                    "val_loss": val_loss,
+                    "val_mAP_50": self.best_val_map,
+                    "history": self.history,
+                    "mlflow_run_id": run_id,
+                },
+                latest_path,
+            )
 
         if self.tracker:
             self.tracker.log_artifact(str(latest_path), artifact_path="checkpoints")
