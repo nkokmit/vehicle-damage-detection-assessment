@@ -31,3 +31,4 @@ clip_grad_norm: 10.0
 checkpoint_dir: artifacts/checkpoints/faster_rcnn
 save_best_only: true
 log_interval: 10
+eval_map_interval: 5

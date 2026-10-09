@@ -101,7 +101,7 @@ def main() -> None:
         if not chkpt_path.exists():
             raise FileNotFoundError(f"Checkpoint not found at: {chkpt_path}")
         logger.info("Loading checkpoint weights from: %s", chkpt_path)
-        checkpoint = torch.load(chkpt_path, map_location=device)
+        checkpoint = torch.load(chkpt_path, map_location=device, weights_only=False)
         state_dict = checkpoint.get("model_state_dict", checkpoint)
         model.load_state_dict(state_dict)
 

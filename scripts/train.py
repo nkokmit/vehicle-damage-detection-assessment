@@ -25,6 +25,7 @@ if str(PROJECT_ROOT) not in sys.path:
 import torch
 
 from src.data.loader import build_cardd_dataset, build_dataloader
+from src.evaluation.evaluator import Evaluator, EvaluatorConfig
 from src.models.model_factory import create_model
 from src.tracking.mlflow_tracker import MLflowConfig, MLflowTracker
 from src.training.trainer import Trainer, TrainerConfig
@@ -62,6 +63,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--cardd-dir", type=str, default="data/CarDD_COCO", help="Path to CarDD dataset")
     parser.add_argument("--num-workers", type=int, default=None, help="DataLoader num workers")
     parser.add_argument("--run-name", type=str, default=None, help="MLflow run name")
+    parser.add_argument("--resume", type=str, default=None, help="Path to checkpoint .pth to resume training")
+    parser.add_argument("--eval-map-interval", type=int, default=None, help="Interval (epochs) to evaluate mAP (default 5, 0 to disable)")
     parser.add_argument("--dry-run", action="store_true", help="Quick run with 4 train batches and 2 val batches for testing")
 
     return parser.parse_args()
@@ -97,6 +100,7 @@ def main() -> None:
     use_amp = args.amp if args.amp is not None else train_yaml.get("use_amp", True)
     accum_steps = args.accum_steps or train_yaml.get("gradient_accumulation_steps", 2)
     clip_grad_norm = train_yaml.get("clip_grad_norm", 10.0)
+    eval_map_interval = args.eval_map_interval if args.eval_map_interval is not None else train_yaml.get("eval_map_interval", 5)
 
     # Dry-run override nếu cần kiểm tra nhanh
     max_train_batches = None
@@ -199,6 +203,7 @@ def main() -> None:
         clip_grad_norm=clip_grad_norm,
         min_size=min_size,
         max_size=max_size,
+        eval_map_interval=eval_map_interval,
         checkpoint_dir=str(checkpoint_dir),
         max_train_batches=max_train_batches,
         max_val_batches=max_val_batches,
@@ -212,6 +217,10 @@ def main() -> None:
         val_loader=val_loader,
         tracker=tracker,
     )
+
+    if args.resume:
+        logger.info("Resuming training from checkpoint: %s", args.resume)
+        trainer.load_checkpoint(args.resume)
 
     tags = {
         "model.family": "Faster R-CNN",
@@ -243,6 +252,7 @@ def main() -> None:
             "scheduler_gamma": gamma,
             "use_amp": use_amp,
             "gradient_accumulation_steps": accum_steps,
+            "eval_map_interval": eval_map_interval,
             "total_parameters": param_counts["total_parameters"],
             "trainable_parameters": param_counts["trainable_parameters"],
             "device": str(device),
@@ -254,15 +264,66 @@ def main() -> None:
         tracker.log_metrics({
             "final_train_loss": history_summary["final_train_loss"],
             "best_val_loss": history_summary["best_val_loss"],
+            "best_val_mAP_50": history_summary.get("best_val_map", 0.0),
         })
 
+        # 6. Đánh giá toàn diện trên tập Validation với checkpoint tốt nhất
+        logger.info("Performing final comprehensive evaluation on validation set...")
+        best_map_chkpt = checkpoint_dir / "best_map_model.pth"
+        best_loss_chkpt = checkpoint_dir / "best_model.pth"
+        eval_chkpt = best_map_chkpt if best_map_chkpt.exists() else best_loss_chkpt
+        if eval_chkpt.exists():
+            logger.info("Loading checkpoint for final evaluation: %s", eval_chkpt)
+            chkpt_data = torch.load(eval_chkpt, map_location=device, weights_only=False)
+            model.load_state_dict(chkpt_data["model_state_dict"])
+
+        eval_cfg = EvaluatorConfig(
+            device=str(device),
+            score_threshold=0.05,
+            use_amp=use_amp,
+            max_batches=max_val_batches,
+        )
+        evaluator = Evaluator(eval_cfg)
+        coco_val_json = PROJECT_ROOT / args.cardd_dir / "annotations" / "instances_val.json"
+        final_eval_metrics = evaluator.evaluate(
+            model=model,
+            data_loader=val_loader,
+            coco_annotation_file=coco_val_json if coco_val_json.exists() else None,
+        )
+
+        reports_dir = PROJECT_ROOT / "artifacts" / "reports" / run_name
+        json_path, md_path = evaluator.save_report(
+            final_eval_metrics,
+            output_dir=reports_dir,
+            prefix="final_eval_report",
+        )
+
+        tracker.log_metrics({
+            "final_eval_mAP_50": final_eval_metrics["mAP_50"],
+            "final_eval_mAP_50_95": final_eval_metrics["mAP_50_95"],
+            "final_eval_precision_50": final_eval_metrics["precision_50"],
+            "final_eval_recall_50": final_eval_metrics["recall_50"],
+            "final_eval_mean_iou": final_eval_metrics["mean_iou"],
+            "final_eval_fps": final_eval_metrics["fps"],
+            "final_eval_latency_ms": final_eval_metrics["latency_ms"],
+        })
+        tracker.log_artifact(str(md_path), artifact_path="reports")
+        tracker.log_artifact(str(json_path), artifact_path="reports")
+        if best_map_chkpt.exists():
+            tracker.log_artifact(str(best_map_chkpt), artifact_path="checkpoints")
+        if best_loss_chkpt.exists():
+            tracker.log_artifact(str(best_loss_chkpt), artifact_path="checkpoints")
+
     logger.info("=" * 65)
-    logger.info("TRAINING FINISHED SUCCESSFULLY!")
-    logger.info("Best Validation Loss: %.4f", history_summary["best_val_loss"])
-    logger.info("Best checkpoint: %s", checkpoint_dir / "best_model.pth")
-    logger.info("Latest checkpoint: %s", checkpoint_dir / "latest_model.pth")
-    logger.info("MLflow Experiment: 'vehicle-damage-detection' (Run: %s)", run_name)
-    logger.info("To view metrics and graphs: mlflow ui --backend-store-uri sqlite:///mlflow.db --port 5000")
+    logger.info("TRAINING & EVALUATION FINISHED SUCCESSFULLY!")
+    logger.info("Best Validation Loss    : %.4f", history_summary["best_val_loss"])
+    logger.info("Best Validation mAP@0.5 : %.4f", history_summary.get("best_val_map", 0.0))
+    logger.info("Final Val mAP@0.5: %.4f | mAP@0.5:0.95: %.4f", final_eval_metrics["mAP_50"], final_eval_metrics["mAP_50_95"])
+    logger.info("Final Val Precision: %.4f | Recall: %.4f", final_eval_metrics["precision_50"], final_eval_metrics["recall_50"])
+    logger.info("Checkpoints Saved In    : %s", checkpoint_dir)
+    logger.info("Evaluation Report       : %s", md_path)
+    logger.info("MLflow Experiment       : 'vehicle-damage-detection' (Run: %s)", run_name)
+    logger.info("To view metrics & graphs: mlflow ui --backend-store-uri sqlite:///mlflow.db --port 5000")
     logger.info("=" * 65)
 
 

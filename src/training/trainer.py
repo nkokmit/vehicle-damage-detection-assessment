@@ -1,6 +1,6 @@
 """Training loop and engine for vehicle damage detection models."""
 
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 import logging
 from pathlib import Path
 import time
@@ -43,6 +43,11 @@ class TrainerConfig:
     min_size: int = 512
     max_size: int = 512
 
+    # Validation evaluation metrics (mAP, Precision, Recall)
+    eval_map_interval: int = 5  # Tính mAP mỗi 5 epochs và epoch cuối cùng (đặt 0 để tắt, 1 để tính mỗi epoch)
+    eval_score_threshold: float = 0.05
+    save_best_map: bool = True
+
     # Checkpoint & logging
     checkpoint_dir: str = "artifacts/checkpoints"
     save_best_only: bool = True
@@ -52,7 +57,7 @@ class TrainerConfig:
 
 
 class Trainer:
-    """Trainer engine supporting PyTorch detection models, AMP, Gradient Accumulation, and MLflow."""
+    """Trainer engine supporting PyTorch detection models, AMP, Gradient Accumulation, mAP Evaluation, and MLflow."""
 
     def __init__(
         self,
@@ -113,8 +118,33 @@ class Trainer:
         self.scaler = torch.amp.GradScaler("cuda" if is_cuda else "cpu", enabled=self.use_amp)
         self.accumulation_steps = max(1, self.config.gradient_accumulation_steps)
 
+        self.start_epoch = 1
         self.best_val_loss = float("inf")
+        self.best_val_map = 0.0
         self.history: list[dict[str, Any]] = []
+
+    def load_checkpoint(self, checkpoint_path: str | Path) -> int:
+        """Load checkpoint to resume model training."""
+        chkpt_file = Path(checkpoint_path)
+        logger.info("Loading checkpoint to resume training: %s", chkpt_file)
+        checkpoint = torch.load(chkpt_file, map_location=self.device, weights_only=False)
+        self.model.load_state_dict(checkpoint["model_state_dict"])
+        if "optimizer_state_dict" in checkpoint:
+            self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+        if "epoch" in checkpoint:
+            self.start_epoch = int(checkpoint["epoch"]) + 1
+        if "val_loss" in checkpoint:
+            self.best_val_loss = float(checkpoint["val_loss"])
+        if "val_mAP_50" in checkpoint:
+            self.best_val_map = float(checkpoint["val_mAP_50"])
+
+        logger.info(
+            "Resumed training state: Start Epoch=%d | Best Val Loss=%.4f | Best mAP@0.5=%.4f",
+            self.start_epoch,
+            self.best_val_loss,
+            self.best_val_map,
+        )
+        return self.start_epoch
 
     def train_one_epoch(self, epoch: int) -> dict[str, float]:
         """Train model for a single epoch with Mixed Precision (AMP) and Gradient Accumulation."""
@@ -136,22 +166,16 @@ class Trainer:
             if self.config.max_train_batches and batch_idx >= self.config.max_train_batches:
                 break
 
-            # Chuyển dữ liệu sang device
             images = [img.to(self.device) for img in images]
             targets = [{k: (v.to(self.device) if isinstance(v, torch.Tensor) else v) for k, v in t.items()} for t in targets]
 
-            # Forward pass under AMP autocast
             with torch.amp.autocast(device_type=self.device.type, enabled=self.use_amp):
-                # Faster R-CNN tự động tính multi-task loss khi model.train()
                 loss_dict = self.model(images, targets)
                 losses = sum(loss for loss in loss_dict.values())
-                # Scale loss theo gradient accumulation steps
                 loss_scaled = losses / self.accumulation_steps
 
-            # Backward pass với GradScaler
             self.scaler.scale(loss_scaled).backward()
 
-            # Optimizer step mỗi accumulation_steps hoặc khi hết batch trong epoch
             is_step = ((batch_idx + 1) % self.accumulation_steps == 0) or ((batch_idx + 1) == num_total_batches)
             if is_step:
                 if self.config.clip_grad_norm > 0:
@@ -195,13 +219,11 @@ class Trainer:
 
     @torch.no_grad()
     def evaluate(self) -> dict[str, float]:
-        """Evaluate model on validation set."""
+        """Evaluate model loss on validation set."""
         if self.val_loader is None:
             return {}
 
-        # Faster R-CNN trong torchvision khi model.eval() chỉ trả về detections.
-        # Để tính validation loss, ta tạm thời để model.train() nhưng không tính grad và không cập nhật weights!
-        self.model.train()
+        self.model.train()  # Để Faster R-CNN trả về dict các loss
         total_val_loss = 0.0
         val_components: dict[str, float] = {}
         num_batches = 0
@@ -237,10 +259,11 @@ class Trainer:
         return metrics
 
     def train(self) -> dict[str, Any]:
-        """Execute the full training loop across configured epochs."""
+        """Execute the full training loop across configured epochs with evaluation."""
         logger.info(
-            "Starting training on %s: %d epochs, batch_size=%d, lr=%.4f (AMP=%s, GradAccum=%d)",
+            "Starting training on %s: Epochs %d-%d, batch_size=%d, lr=%.4f (AMP=%s, GradAccum=%d)",
             self.device,
+            self.start_epoch,
             self.config.epochs,
             self.config.batch_size,
             self.config.learning_rate,
@@ -268,20 +291,69 @@ class Trainer:
             except Exception as e:
                 logger.debug("Parameters may already be logged in MLflow run: %s", e)
 
-        for epoch in range(1, self.config.epochs + 1):
+        for epoch in range(self.start_epoch, self.config.epochs + 1):
             epoch_start = time.time()
 
             # 1. Train 1 epoch
             train_metrics = self.train_one_epoch(epoch)
 
-            # 2. Evaluate
+            # 2. Evaluate loss
             val_metrics = self.evaluate() if self.val_loader else {}
 
+            # 3. Định kỳ tính toán Detection Evaluation Metrics (mAP, Precision, Recall, IoU)
+            eval_metrics = {}
+            should_eval_map = self.val_loader and self.config.eval_map_interval > 0 and (
+                epoch % self.config.eval_map_interval == 0 or epoch == self.config.epochs
+            )
+            if should_eval_map:
+                from src.evaluation.evaluator import Evaluator, EvaluatorConfig
+
+                eval_cfg = EvaluatorConfig(
+                    device=str(self.device),
+                    score_threshold=self.config.eval_score_threshold,
+                    use_amp=self.use_amp,
+                    max_batches=self.config.max_val_batches,
+                )
+                evaluator = Evaluator(eval_cfg)
+                eval_results = evaluator.evaluate(self.model, self.val_loader)
+                eval_metrics = {
+                    "val_mAP_50": eval_results["mAP_50"],
+                    "val_mAP_50_95": eval_results["mAP_50_95"],
+                    "val_precision_50": eval_results["precision_50"],
+                    "val_recall_50": eval_results["recall_50"],
+                    "val_mean_iou": eval_results["mean_iou"],
+                }
+                logger.info(
+                    "Epoch [%d/%d] Evaluation | mAP@0.5: %.4f | mAP@0.5:0.95: %.4f | Precision: %.4f | Recall: %.4f",
+                    epoch,
+                    self.config.epochs,
+                    eval_results["mAP_50"],
+                    eval_results["mAP_50_95"],
+                    eval_results["precision_50"],
+                    eval_results["recall_50"],
+                )
+
+                if self.config.save_best_map and eval_results["mAP_50"] > self.best_val_map:
+                    self.best_val_map = eval_results["mAP_50"]
+                    best_map_path = self.checkpoint_path / "best_map_model.pth"
+                    torch.save(
+                        {
+                            "epoch": epoch,
+                            "model_state_dict": self.model.state_dict(),
+                            "optimizer_state_dict": self.optimizer.state_dict(),
+                            "val_mAP_50": self.best_val_map,
+                            "val_mAP_50_95": eval_results["mAP_50_95"],
+                            "config": asdict(self.config),
+                        },
+                        best_map_path,
+                    )
+                    logger.info("Saved new best mAP checkpoint to: %s (mAP@0.5: %.4f)", best_map_path, self.best_val_map)
+
             epoch_time = time.time() - epoch_start
-            combined_metrics = {**train_metrics, **val_metrics, "epoch_duration_sec": epoch_time}
+            combined_metrics = {**train_metrics, **val_metrics, **eval_metrics, "epoch_duration_sec": epoch_time}
             self.history.append(combined_metrics)
 
-            # 3. Log to MLflow
+            # 4. Log to MLflow
             if self.tracker:
                 self.tracker.log_metrics(combined_metrics, step=epoch)
 
@@ -296,7 +368,7 @@ class Trainer:
                 epoch_time,
             )
 
-            # 4. Lưu Checkpoint
+            # 5. Lưu Checkpoint Loss tốt nhất
             if val_loss < self.best_val_loss:
                 self.best_val_loss = val_loss
                 best_path = self.checkpoint_path / "best_model.pth"
@@ -306,18 +378,22 @@ class Trainer:
                         "model_state_dict": self.model.state_dict(),
                         "optimizer_state_dict": self.optimizer.state_dict(),
                         "val_loss": self.best_val_loss,
-                        "config": self.config,
+                        "val_mAP_50": self.best_val_map,
+                        "config": asdict(self.config),
                     },
                     best_path,
                 )
-                logger.info("Saved new best model checkpoint to: %s", best_path)
+                logger.info("Saved new best loss checkpoint to: %s (Val Loss: %.4f)", best_path, self.best_val_loss)
 
+        # 6. Lưu Checkpoint Epoch cuối cùng
         latest_path = self.checkpoint_path / "latest_model.pth"
         torch.save(
             {
                 "epoch": self.config.epochs,
                 "model_state_dict": self.model.state_dict(),
                 "optimizer_state_dict": self.optimizer.state_dict(),
+                "val_loss": val_loss,
+                "val_mAP_50": self.best_val_map,
                 "history": self.history,
             },
             latest_path,
@@ -329,6 +405,7 @@ class Trainer:
         return {
             "epochs": float(self.config.epochs),
             "best_val_loss": self.best_val_loss,
+            "best_val_map": self.best_val_map,
             "final_train_loss": self.history[-1]["train_loss"] if self.history else 0.0,
             "history": self.history,
         }
