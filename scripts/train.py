@@ -174,7 +174,7 @@ def main() -> None:
 
     # 4. Thiết lập MLflow Tracker
     mlflow_config = MLflowConfig(
-        tracking_uri="mlruns",
+        tracking_uri="sqlite:///mlflow.db",
         experiment_name="vehicle-damage-detection",
     )
     tracker = MLflowTracker(config=mlflow_config)
@@ -262,7 +262,7 @@ def main() -> None:
     logger.info("Best checkpoint: %s", checkpoint_dir / "best_model.pth")
     logger.info("Latest checkpoint: %s", checkpoint_dir / "latest_model.pth")
     logger.info("MLflow Experiment: 'vehicle-damage-detection' (Run: %s)", run_name)
-    logger.info("To view metrics and graphs: mlflow ui --port 5000")
+    logger.info("To view metrics and graphs: mlflow ui --backend-store-uri sqlite:///mlflow.db --port 5000")
     logger.info("=" * 65)
 
 

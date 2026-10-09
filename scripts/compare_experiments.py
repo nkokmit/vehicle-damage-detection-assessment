@@ -212,7 +212,7 @@ Báo cáo so sánh hai kiến trúc Faster R-CNN ResNet-50 trên tập dữ li�
 Để xem biểu đồ loss curves, siêu tham số và artifacts trực tiếp trên trình duyệt:
 
 ```bash
-mlflow ui --port 5000
+mlflow ui --backend-store-uri sqlite:///mlflow.db --port 5000
 ```
 Truy cập: [http://localhost:5000](http://localhost:5000) -> Experiment: `vehicle-damage-detection`.
 """
@@ -252,7 +252,7 @@ def main():
     val_loader = build_dataloader(val_dataset, batch_size=args.batch_size, shuffle=False, num_workers=0)
 
     # 2. Khởi tạo MLflow Tracker
-    mlflow_config = MLflowConfig(tracking_uri="mlruns", experiment_name="vehicle-damage-detection")
+    mlflow_config = MLflowConfig(tracking_uri="sqlite:///mlflow.db", experiment_name="vehicle-damage-detection")
     tracker = MLflowTracker(config=mlflow_config)
 
     # 3. Chạy Experiment 1: Faster R-CNN ResNet-50 FPN V1
@@ -301,7 +301,7 @@ def main():
     print(df.to_string(index=False))
     print("=" * 70)
     print(f"\nBao cao chi tiet da luu tai: {report_file}")
-    print("De xem giao dien MLflow UI, chay lenh: mlflow ui --port 5000\n")
+    print("De xem giao dien MLflow UI, chay lenh: mlflow ui --backend-store-uri sqlite:///mlflow.db --port 5000\n")
 
 
 if __name__ == "__main__":

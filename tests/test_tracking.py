@@ -5,9 +5,12 @@ from src.tracking.mlflow_tracker import MLflowConfig, MLflowTracker
 
 
 def test_mlflow_tracker_lifecycle() -> None:
-    with tempfile.TemporaryDirectory() as tmp_dir:
+    assert MLflowConfig().tracking_uri == "sqlite:///mlflow.db"
+
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp_dir:
+        db_path = Path(tmp_dir) / "test.db"
         config = MLflowConfig(
-            tracking_uri=f"file:///{tmp_dir}",
+            tracking_uri=f"sqlite:///{db_path.as_posix()}",
             experiment_name="test-experiment",
         )
         tracker = MLflowTracker(config)

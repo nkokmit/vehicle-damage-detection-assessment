@@ -169,7 +169,7 @@ def main() -> None:
 
     # 6. Ghi log lên MLflow nếu có cờ --log-mlflow
     if args.log_mlflow:
-        mlflow_config = MLflowConfig(tracking_uri="mlruns", experiment_name=args.experiment_name)
+        mlflow_config = MLflowConfig(tracking_uri="sqlite:///mlflow.db", experiment_name=args.experiment_name)
         tracker = MLflowTracker(config=mlflow_config)
         with tracker.run(run_name=f"eval_{args.backbone}_{args.split}", tags={"task": "evaluation", "split": args.split}):
             flat_metrics = {

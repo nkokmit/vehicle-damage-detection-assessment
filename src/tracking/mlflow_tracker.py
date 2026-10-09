@@ -11,9 +11,6 @@ import mlflow
 import pandas as pd
 import torch
 
-# Cho phép MLflow 3.x+ sử dụng filesystem store (./mlruns) mà không bị exception
-os.environ.setdefault("MLFLOW_ALLOW_FILE_STORE", "true")
-
 logger = logging.getLogger(__name__)
 
 
@@ -21,7 +18,7 @@ logger = logging.getLogger(__name__)
 class MLflowConfig:
     """MLflow configuration settings."""
 
-    tracking_uri: str = "mlruns"
+    tracking_uri: str = "sqlite:///mlflow.db"
     experiment_name: str = "vehicle-damage-detection"
 
 
