@@ -1,0 +1,30 @@
+{
+  "class_thresholds": {
+    "dent": 0.8,
+    "scratch": 0.6,
+    "crack": 0.6,
+    "glass shatter": 0.8,
+    "lamp broken": 0.8,
+    "tire flat": 0.8
+  },
+  "class_id_thresholds": {
+    "1": 0.8,
+    "2": 0.6,
+    "3": 0.6,
+    "4": 0.8,
+    "5": 0.8,
+    "6": 0.8
+  },
+  "soft_nms": {
+    "enabled": true,
+    "method": "gaussian",
+    "iou_threshold": 0.5,
+    "sigma": 0.5
+  },
+  "metrics_at_optimal": {
+    "micro_precision": 0.5300291545189504,
+    "micro_recall": 0.5212155963302753,
+    "micro_f1": 0.5255854293148309,
+    "macro_f1": 0.612777007150329
+  }
+}
