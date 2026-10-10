@@ -102,6 +102,13 @@ def test_compute_detection_metrics_all() -> None:
     assert metrics["mean_iou"] == pytest.approx(1.0)
     assert metrics["precision_50"] == pytest.approx(1.0)
     assert metrics["recall_50"] == pytest.approx(1.0)
+    assert "precision_score05" in metrics
+    assert "recall_score05" in metrics
+    assert "f1_score05" in metrics
+    assert "f1_50" in metrics
+    assert metrics["precision_score05"] == pytest.approx(1.0)
+    assert metrics["recall_score05"] == pytest.approx(1.0)
+    assert metrics["f1_score05"] == pytest.approx(1.0)
 
 
 def test_confusion_matrix_structure() -> None:

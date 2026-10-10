@@ -145,6 +145,10 @@ def evaluate_class_at_iou(
             "num_fp": 0,
             "num_gt": total_gt,
             "matched_ious": [],
+            "tp_03": 0,
+            "fp_03": 0,
+            "tp_05": 0,
+            "fp_05": 0,
         }
 
     # Sắp xếp các dự đoán giảm dần theo confidence score
@@ -191,6 +195,15 @@ def evaluate_class_at_iou(
     final_rec = float(recalls[-1]) if len(recalls) > 0 else 0.0
     mean_iou = float(np.mean(matched_ious)) if len(matched_ious) > 0 else 0.0
 
+    # Operational metrics at confidence thresholds 0.30 and 0.50
+    scores_arr = np.array([float(p["score"]) for p in sorted_preds], dtype=np.float32)
+    mask_03 = scores_arr >= 0.30
+    mask_05 = scores_arr >= 0.50
+    tp_03 = int(np.sum(tp[mask_03])) if len(scores_arr) > 0 else 0
+    fp_03 = int(np.sum(fp[mask_03])) if len(scores_arr) > 0 else 0
+    tp_05 = int(np.sum(tp[mask_05])) if len(scores_arr) > 0 else 0
+    fp_05 = int(np.sum(fp[mask_05])) if len(scores_arr) > 0 else 0
+
     return {
         "ap": ap,
         "precision": final_prec,
@@ -200,6 +213,10 @@ def evaluate_class_at_iou(
         "num_fp": int(fp_cumsum[-1]),
         "num_gt": total_gt,
         "matched_ious": matched_ious,
+        "tp_03": tp_03,
+        "fp_03": fp_03,
+        "tp_05": tp_05,
+        "fp_05": fp_05,
     }
 
 
@@ -286,6 +303,10 @@ def compute_detection_metrics(
     total_tp_50 = 0
     total_fp_50 = 0
     total_gt_all = 0
+    total_tp_03 = 0
+    total_fp_03 = 0
+    total_tp_05 = 0
+    total_fp_05 = 0
 
     for cls_idx, cls_name in enumerate(class_names, start=1):
         class_preds = preds_by_class.get(cls_idx, [])
@@ -302,6 +323,17 @@ def compute_detection_metrics(
         total_tp_50 += res_50["num_tp"]
         total_fp_50 += res_50["num_fp"]
         total_gt_all += res_50["num_gt"]
+        total_tp_03 += res_50.get("tp_03", 0)
+        total_fp_03 += res_50.get("fp_03", 0)
+        total_tp_05 += res_50.get("tp_05", 0)
+        total_fp_05 += res_50.get("fp_05", 0)
+
+        # Operational metrics per class at score >= 0.50
+        cls_tp_05 = res_50.get("tp_05", 0)
+        cls_fp_05 = res_50.get("fp_05", 0)
+        cls_prec_05 = float(cls_tp_05 / max(1, cls_tp_05 + cls_fp_05)) if (cls_tp_05 + cls_fp_05) > 0 else 0.0
+        cls_rec_05 = float(cls_tp_05 / max(1, res_50["num_gt"])) if res_50["num_gt"] > 0 else 0.0
+        cls_f1_05 = float((2 * cls_prec_05 * cls_rec_05) / max(1e-8, cls_prec_05 + cls_rec_05))
 
         # Đánh giá qua toàn bộ dải IoU [0.50:0.95]
         aps_iou_series: list[float] = []
@@ -329,6 +361,11 @@ def compute_detection_metrics(
             "num_pred": len(class_preds),
             "num_tp": res_50["num_tp"],
             "num_fp": res_50["num_fp"],
+            "tp_score05": cls_tp_05,
+            "fp_score05": cls_fp_05,
+            "precision_score05": cls_prec_05,
+            "recall_score05": cls_rec_05,
+            "f1_score05": cls_f1_05,
         }
 
     # Tổng hợp toàn cục
@@ -338,14 +375,33 @@ def compute_detection_metrics(
     macro_recall_50 = float(np.mean(class_recalls_50)) if len(class_recalls_50) > 0 else 0.0
     micro_precision_50 = float(total_tp_50 / max(1, total_tp_50 + total_fp_50))
     micro_recall_50 = float(total_tp_50 / max(1, total_gt_all))
+    f1_50 = float((2 * micro_precision_50 * micro_recall_50) / max(1e-8, micro_precision_50 + micro_recall_50))
     overall_mean_iou = float(np.mean(total_matched_ious_05)) if len(total_matched_ious_05) > 0 else 0.0
+
+    # Operational metrics (ngưỡng tin cậy thực tế 0.30 và 0.50)
+    precision_score03 = float(total_tp_03 / max(1, total_tp_03 + total_fp_03)) if (total_tp_03 + total_fp_03) > 0 else 0.0
+    recall_score03 = float(total_tp_03 / max(1, total_gt_all)) if total_gt_all > 0 else 0.0
+    f1_score03 = float((2 * precision_score03 * recall_score03) / max(1e-8, precision_score03 + recall_score03))
+
+    precision_score05 = float(total_tp_05 / max(1, total_tp_05 + total_fp_05)) if (total_tp_05 + total_fp_05) > 0 else 0.0
+    recall_score05 = float(total_tp_05 / max(1, total_gt_all)) if total_gt_all > 0 else 0.0
+    f1_score05 = float((2 * precision_score05 * recall_score05) / max(1e-8, precision_score05 + recall_score05))
 
     return {
         "mean_iou": overall_mean_iou,
         "precision_50": micro_precision_50,
         "recall_50": micro_recall_50,
+        "f1_50": f1_50,
         "macro_precision_50": macro_precision_50,
         "macro_recall_50": macro_recall_50,
+        "precision_score03": precision_score03,
+        "recall_score03": recall_score03,
+        "f1_score03": f1_score03,
+        "precision_score05": precision_score05,
+        "recall_score05": recall_score05,
+        "f1_score05": f1_score05,
+        "tp_score05": total_tp_05,
+        "fp_score05": total_fp_05,
         "mAP_50": mAP_50,
         "mAP_50_95": mAP_50_95,
         "num_classes": num_classes,

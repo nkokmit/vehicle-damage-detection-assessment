@@ -16,11 +16,11 @@ momentum: 0.9
 weight_decay: 0.0005
 backbone_lr_ratio: 0.1
 
-# Learning rate scheduler
+# Learning rate scheduler ('step' or 'cosine')
 scheduler:
-  type: step
+  type: cosine
   step_size: 5
-  gamma: 0.1
+  gamma: 0.5
 
 # Acceleration & Memory Optimization
 use_amp: true

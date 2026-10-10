@@ -123,8 +123,24 @@ class Trainer:
         self.best_val_map = 0.0
         self.history: list[dict[str, Any]] = []
 
-    def load_checkpoint(self, checkpoint_path: str | Path) -> int:
-        """Load checkpoint to resume model training."""
+    def load_checkpoint(
+        self,
+        checkpoint_path: str | Path,
+        reset_lr: bool = False,
+        new_lr: float | None = None,
+        scheduler_type: str | None = None,
+    ) -> int:
+        """Load checkpoint to resume model training.
+
+        Args:
+            checkpoint_path: Path to .pth checkpoint file.
+            reset_lr: If True, reset optimizer learning rate and re-initialize scheduler.
+            new_lr: Optional learning rate override.
+            scheduler_type: Optional scheduler type ('step' or 'cosine').
+
+        Returns:
+            The start epoch index for resumed training.
+        """
         chkpt_file = Path(checkpoint_path)
         logger.info("Loading checkpoint to resume training: %s", chkpt_file)
         checkpoint = torch.load(chkpt_file, map_location=self.device, weights_only=False)
@@ -137,6 +153,51 @@ class Trainer:
             self.best_val_loss = float(checkpoint["val_loss"])
         if "val_mAP_50" in checkpoint:
             self.best_val_map = float(checkpoint["val_mAP_50"])
+
+        # Phục hồi / làm mới Learning Rate nếu kích hoạt reset_lr
+        if reset_lr or (new_lr is not None) or (scheduler_type is not None):
+            target_lr = float(new_lr) if new_lr is not None else self.config.learning_rate
+            backbone_ratio = self.config.backbone_lr_ratio
+
+            # Cập nhật learning rate cho các parameter groups
+            if len(self.optimizer.param_groups) == 2:
+                self.optimizer.param_groups[0]["lr"] = target_lr * backbone_ratio
+                self.optimizer.param_groups[0]["initial_lr"] = target_lr * backbone_ratio
+                self.optimizer.param_groups[1]["lr"] = target_lr
+                self.optimizer.param_groups[1]["initial_lr"] = target_lr
+            else:
+                for group in self.optimizer.param_groups:
+                    group["lr"] = target_lr
+                    group["initial_lr"] = target_lr
+
+            # Xóa momentum buffer cũ để không bị giật gradient từ chu kỳ cũ
+            self.optimizer.state.clear()
+
+            sched_type = (scheduler_type or self.config.scheduler_type).lower()
+            remaining_epochs = max(1, self.config.epochs - self.start_epoch + 1)
+
+            if sched_type == "cosine":
+                self.lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+                    self.optimizer,
+                    T_max=remaining_epochs,
+                    eta_min=1e-6,
+                )
+            elif sched_type == "step":
+                self.lr_scheduler = torch.optim.lr_scheduler.StepLR(
+                    self.optimizer,
+                    step_size=self.config.scheduler_step_size,
+                    gamma=self.config.scheduler_gamma,
+                )
+            else:
+                raise ValueError(f"Unsupported scheduler_type: '{sched_type}'. Choose 'cosine' or 'step'.")
+
+            logger.info(
+                "Revitalized learning rate: Target Head LR=%.6f, Backbone LR=%.6f | Scheduler=%s (Remaining epochs: %d)",
+                target_lr,
+                target_lr * backbone_ratio if len(self.optimizer.param_groups) == 2 else target_lr,
+                sched_type,
+                remaining_epochs,
+            )
 
         logger.info(
             "Resumed training state: Start Epoch=%d | Best Val Loss=%.4f | Best mAP@0.5=%.4f",
@@ -322,16 +383,26 @@ class Trainer:
                     "val_mAP_50_95": eval_results["mAP_50_95"],
                     "val_precision_50": eval_results["precision_50"],
                     "val_recall_50": eval_results["recall_50"],
+                    "val_f1_50": eval_results.get("f1_50", 0.0),
+                    "val_precision_score03": eval_results.get("precision_score03", 0.0),
+                    "val_recall_score03": eval_results.get("recall_score03", 0.0),
+                    "val_f1_score03": eval_results.get("f1_score03", 0.0),
+                    "val_precision_score05": eval_results.get("precision_score05", 0.0),
+                    "val_recall_score05": eval_results.get("recall_score05", 0.0),
+                    "val_f1_score05": eval_results.get("f1_score05", 0.0),
                     "val_mean_iou": eval_results["mean_iou"],
                 }
                 logger.info(
-                    "Epoch [%d/%d] Evaluation | mAP@0.5: %.4f | mAP@0.5:0.95: %.4f | Precision: %.4f | Recall: %.4f",
+                    "Epoch [%d/%d] Eval | mAP@0.5: %.4f | mAP@0.5:0.95: %.4f | Base P@0.05: %.4f (R: %.4f) | Opt P@0.5: %.4f (R: %.4f, F1: %.4f)",
                     epoch,
                     self.config.epochs,
                     eval_results["mAP_50"],
                     eval_results["mAP_50_95"],
                     eval_results["precision_50"],
                     eval_results["recall_50"],
+                    eval_results.get("precision_score05", 0.0),
+                    eval_results.get("recall_score05", 0.0),
+                    eval_results.get("f1_score05", 0.0),
                 )
 
                 if self.config.save_best_map and eval_results["mAP_50"] > self.best_val_map:

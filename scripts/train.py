@@ -64,6 +64,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--num-workers", type=int, default=None, help="DataLoader num workers")
     parser.add_argument("--run-name", type=str, default=None, help="MLflow run name")
     parser.add_argument("--resume", type=str, default=None, help="Path to checkpoint .pth to resume training")
+    parser.add_argument("--reset-lr", action="store_true", help="Reset optimizer learning rate and scheduler when resuming from checkpoint")
     parser.add_argument("--run-id", type=str, default=None, help="Existing MLflow run ID to resume logging into")
     parser.add_argument("--eval-map-interval", type=int, default=None, help="Interval (epochs) to evaluate mAP (default 5, 0 to disable)")
     parser.add_argument("--dry-run", action="store_true", help="Quick run with 4 train batches and 2 val batches for testing")
@@ -221,8 +222,15 @@ def main() -> None:
 
     resume_run_id = args.run_id
     if args.resume:
-        logger.info("Resuming training from checkpoint: %s", args.resume)
-        trainer.load_checkpoint(args.resume)
+        should_reset_lr = bool(args.reset_lr or (args.lr is not None) or (args.scheduler_type is not None))
+        start_epoch = trainer.load_checkpoint(
+            args.resume,
+            reset_lr=should_reset_lr,
+            new_lr=args.lr,
+            scheduler_type=args.scheduler_type,
+        )
+        if args.dry_run and trainer.config.epochs < start_epoch:
+            trainer.config.epochs = start_epoch
         if not resume_run_id:
             try:
                 chkpt_dict = torch.load(args.resume, map_location="cpu", weights_only=False)
@@ -318,6 +326,13 @@ def main() -> None:
             "final_eval_mAP_50_95": final_eval_metrics["mAP_50_95"],
             "final_eval_precision_50": final_eval_metrics["precision_50"],
             "final_eval_recall_50": final_eval_metrics["recall_50"],
+            "final_eval_f1_50": final_eval_metrics.get("f1_50", 0.0),
+            "final_eval_precision_score03": final_eval_metrics.get("precision_score03", 0.0),
+            "final_eval_recall_score03": final_eval_metrics.get("recall_score03", 0.0),
+            "final_eval_f1_score03": final_eval_metrics.get("f1_score03", 0.0),
+            "final_eval_precision_score05": final_eval_metrics.get("precision_score05", 0.0),
+            "final_eval_recall_score05": final_eval_metrics.get("recall_score05", 0.0),
+            "final_eval_f1_score05": final_eval_metrics.get("f1_score05", 0.0),
             "final_eval_mean_iou": final_eval_metrics["mean_iou"],
             "final_eval_fps": final_eval_metrics["fps"],
             "final_eval_latency_ms": final_eval_metrics["latency_ms"],
@@ -334,7 +349,18 @@ def main() -> None:
     logger.info("Best Validation Loss    : %.4f", history_summary["best_val_loss"])
     logger.info("Best Validation mAP@0.5 : %.4f", history_summary.get("best_val_map", 0.0))
     logger.info("Final Val mAP@0.5: %.4f | mAP@0.5:0.95: %.4f", final_eval_metrics["mAP_50"], final_eval_metrics["mAP_50_95"])
-    logger.info("Final Val Precision: %.4f | Recall: %.4f", final_eval_metrics["precision_50"], final_eval_metrics["recall_50"])
+    logger.info(
+        "Final Val (Base s>=0.05): Precision: %.4f | Recall: %.4f | F1: %.4f",
+        final_eval_metrics["precision_50"],
+        final_eval_metrics["recall_50"],
+        final_eval_metrics.get("f1_50", 0.0),
+    )
+    logger.info(
+        "Operational (Opt s>=0.50): Precision: %.4f | Recall: %.4f | F1: %.4f",
+        final_eval_metrics.get("precision_score05", 0.0),
+        final_eval_metrics.get("recall_score05", 0.0),
+        final_eval_metrics.get("f1_score05", 0.0),
+    )
     logger.info("Checkpoints Saved In    : %s", checkpoint_dir)
     logger.info("Evaluation Report       : %s", md_path)
     logger.info("MLflow Experiment       : 'vehicle-damage-detection' (Run: %s)", run_name)
