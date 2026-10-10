@@ -67,6 +67,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--reset-lr", action="store_true", help="Reset optimizer learning rate and scheduler when resuming from checkpoint")
     parser.add_argument("--run-id", type=str, default=None, help="Existing MLflow run ID to resume logging into")
     parser.add_argument("--eval-map-interval", type=int, default=None, help="Interval (epochs) to evaluate mAP (default 5, 0 to disable)")
+    parser.add_argument("--advanced-aug", action="store_true", default=None, help="Enable reflection-robust advanced augmentations")
+    parser.add_argument("--no-advanced-aug", dest="advanced_aug", action="store_false", help="Disable advanced augmentations")
     parser.add_argument("--dry-run", action="store_true", help="Quick run with 4 train batches and 2 val batches for testing")
 
     return parser.parse_args()
@@ -103,6 +105,7 @@ def main() -> None:
     accum_steps = args.accum_steps or train_yaml.get("gradient_accumulation_steps", 2)
     clip_grad_norm = train_yaml.get("clip_grad_norm", 10.0)
     eval_map_interval = args.eval_map_interval if args.eval_map_interval is not None else train_yaml.get("eval_map_interval", 5)
+    use_advanced_aug = args.advanced_aug if args.advanced_aug is not None else train_yaml.get("use_advanced_aug", True)
 
     # Dry-run override nếu cần kiểm tra nhanh
     max_train_batches = None
@@ -130,15 +133,17 @@ def main() -> None:
     logger.info("Scheduler                : %s (step_size=%d, gamma=%.2f)", scheduler_type, step_size, gamma)
     logger.info("Mixed Precision (AMP)    : %s", use_amp)
     logger.info("Gradient Accumulation    : %d (Effective Batch Size = %d)", accum_steps, batch_size * accum_steps)
+    logger.info("Advanced Augmentation    : %s (Reflection-Robust & Specular-Invariance)", use_advanced_aug)
     logger.info("=" * 65)
 
-    # 2. Xây dựng Dataset với image_size=512 (min và max)
+    # 2. Xây dựng Dataset với image_size=(min_size, max_size)
     logger.info("Loading CarDD dataset from: %s", args.cardd_dir)
     train_dataset = build_cardd_dataset(
         split="train",
         cardd_dir=args.cardd_dir,
         img_size=(image_size, image_size),
         use_augmentation=True,
+        use_advanced_aug=use_advanced_aug,
     )
     val_dataset = build_cardd_dataset(
         split="val",
@@ -247,6 +252,7 @@ def main() -> None:
         "training.amp": str(use_amp),
         "training.grad_accum": str(accum_steps),
         "training.image_size": f"{image_size}x{image_size}",
+        "training.advanced_aug": str(use_advanced_aug),
     }
 
     # 5. Huấn luyện mô hình và log vào MLflow
@@ -266,6 +272,7 @@ def main() -> None:
             "image_size": image_size,
             "min_size": min_size,
             "max_size": max_size,
+            "advanced_augmentation": use_advanced_aug,
             "optimizer": "SGD",
             "learning_rate": lr,
             "momentum": momentum,

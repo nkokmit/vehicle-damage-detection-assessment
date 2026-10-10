@@ -1,0 +1,36 @@
+seed: 42
+device: cuda
+epochs: 20
+batch_size: 1
+gradient_accumulation_steps: 4
+image_size: 800
+min_size: 800
+max_size: 800
+num_workers: 2
+
+# Optimizer settings (fine-tuning from best 512x512 checkpoint)
+optimizer: SGD
+learning_rate: 0.0003
+momentum: 0.9
+weight_decay: 0.0005
+backbone_lr_ratio: 0.1
+
+# Learning rate scheduler
+scheduler:
+  type: cosine
+  step_size: 5
+  gamma: 0.5
+
+# Acceleration & Memory Optimization
+use_amp: true
+clip_grad_norm: 10.0
+
+# Advanced Reflection-Robust Data Augmentation
+use_advanced_aug: true
+
+# Checkpoints & Logging
+checkpoint_dir: artifacts/checkpoints/faster_rcnn_resnet50_fpn_amp_accum_b1_res800
+save_best_only: true
+log_interval: 10
+eval_map_interval: 2
+

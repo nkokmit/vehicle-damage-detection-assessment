@@ -68,3 +68,13 @@ def test_cardd_dataset_summary() -> None:
     assert summary["total_images"] == 2816
     assert summary["total_annotations"] == 6211
     assert "scratch" in summary["class_distribution"]
+
+
+@pytest.mark.skipif(not CARDD_TRAIN_JSON.exists(), reason="CarDD dataset not present")
+def test_cardd_dataset_advanced_augmentation() -> None:
+    dataset = build_cardd_dataset("train", cardd_dir="data/CarDD_COCO", img_size=(800, 800), use_augmentation=True, use_advanced_aug=True)
+    img_tensor, target = dataset[0]
+    assert isinstance(img_tensor, torch.Tensor)
+    assert img_tensor.shape == (3, 800, 800)
+    assert "boxes" in target
+

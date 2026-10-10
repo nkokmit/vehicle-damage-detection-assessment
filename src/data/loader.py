@@ -40,13 +40,14 @@ def build_cardd_dataset(
     cardd_dir: str | Path = "data/CarDD_COCO",
     img_size: tuple[int, int] = (800, 800),
     use_augmentation: bool = True,
+    use_advanced_aug: bool = True,
 ) -> VehicleDamageDataset:
     cardd_path = Path(cardd_dir)
     img_dir = cardd_path / f"{split}2017"
     ann_file = cardd_path / "annotations" / f"instances_{split}2017.json"
 
     if split == "train" and use_augmentation:
-        transforms = get_train_transforms(img_size=img_size)
+        transforms = get_train_transforms(img_size=img_size, use_advanced_aug=use_advanced_aug)
     else:
         transforms = get_val_transforms(img_size=img_size)
 
