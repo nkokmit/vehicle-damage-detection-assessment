@@ -234,8 +234,7 @@ def main() -> None:
             new_lr=args.lr,
             scheduler_type=args.scheduler_type,
         )
-        if args.dry_run and trainer.config.epochs < start_epoch:
-            trainer.config.epochs = start_epoch
+        epochs = trainer.config.epochs
         if not resume_run_id:
             try:
                 chkpt_dict = torch.load(args.resume, map_location="cpu", weights_only=False)

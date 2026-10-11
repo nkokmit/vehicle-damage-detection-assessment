@@ -149,6 +149,21 @@ class Trainer:
             self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
         if "epoch" in checkpoint:
             self.start_epoch = int(checkpoint["epoch"]) + 1
+
+        # Tự động điều chỉnh total epochs nếu config.epochs < start_epoch
+        # (Ví dụ: resume từ checkpoint epoch 40 với yêu cầu train 20 epoch -> target epochs = 40 + 20 = 60)
+        if self.config.epochs < self.start_epoch:
+            additional_epochs = self.config.epochs
+            self.config.epochs = (self.start_epoch - 1) + additional_epochs
+            logger.info(
+                "Adjusted total epochs: Resuming from epoch %d with %d epochs requested -> Setting target total epochs to %d (training epochs %d to %d)",
+                self.start_epoch - 1,
+                additional_epochs,
+                self.config.epochs,
+                self.start_epoch,
+                self.config.epochs,
+            )
+
         if "val_loss" in checkpoint:
             self.best_val_loss = float(checkpoint["val_loss"])
         if "val_mAP_50" in checkpoint:
@@ -352,6 +367,7 @@ class Trainer:
             except Exception as e:
                 logger.debug("Parameters may already be logged in MLflow run: %s", e)
 
+        latest_path = self.checkpoint_path / "latest_model.pth"
         for epoch in range(self.start_epoch, self.config.epochs + 1):
             epoch_start = time.time()
 
@@ -474,7 +490,7 @@ class Trainer:
                 latest_path,
             )
 
-        if self.tracker:
+        if self.tracker and latest_path.exists():
             self.tracker.log_artifact(str(latest_path), artifact_path="checkpoints")
 
         return {
