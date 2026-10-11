@@ -129,6 +129,7 @@ class Trainer:
         reset_lr: bool = False,
         new_lr: float | None = None,
         scheduler_type: str | None = None,
+        weights_only: bool = False,
     ) -> int:
         """Load checkpoint to resume model training.
 
@@ -137,6 +138,7 @@ class Trainer:
             reset_lr: If True, reset optimizer learning rate and re-initialize scheduler.
             new_lr: Optional learning rate override.
             scheduler_type: Optional scheduler type ('step' or 'cosine').
+            weights_only: If True, load only model weights, reset start_epoch to 1, and reset best metrics.
 
         Returns:
             The start epoch index for resumed training.
@@ -145,29 +147,39 @@ class Trainer:
         logger.info("Loading checkpoint to resume training: %s", chkpt_file)
         checkpoint = torch.load(chkpt_file, map_location=self.device, weights_only=False)
         self.model.load_state_dict(checkpoint["model_state_dict"])
-        if "optimizer_state_dict" in checkpoint:
+        if not weights_only and "optimizer_state_dict" in checkpoint:
             self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
-        if "epoch" in checkpoint:
+        if not weights_only and "epoch" in checkpoint:
             self.start_epoch = int(checkpoint["epoch"]) + 1
 
-        # Tự động điều chỉnh total epochs nếu config.epochs < start_epoch
-        # (Ví dụ: resume từ checkpoint epoch 40 với yêu cầu train 20 epoch -> target epochs = 40 + 20 = 60)
-        if self.config.epochs < self.start_epoch:
-            additional_epochs = self.config.epochs
-            self.config.epochs = (self.start_epoch - 1) + additional_epochs
+        if weights_only:
+            self.start_epoch = 1
+            self.best_val_loss = float("inf")
+            self.best_val_map = 0.0
+            reset_lr = True
             logger.info(
-                "Adjusted total epochs: Resuming from epoch %d with %d epochs requested -> Setting target total epochs to %d (training epochs %d to %d)",
-                self.start_epoch - 1,
-                additional_epochs,
-                self.config.epochs,
-                self.start_epoch,
+                "Weights-only fine-tuning mode: Loaded model weights from checkpoint. Starting fresh from Epoch 1 to %d.",
                 self.config.epochs,
             )
+        else:
+            # Tự động điều chỉnh total epochs nếu config.epochs < start_epoch
+            # (Ví dụ: resume từ checkpoint epoch 40 với yêu cầu train 20 epoch -> target epochs = 40 + 20 = 60)
+            if self.config.epochs < self.start_epoch:
+                additional_epochs = self.config.epochs
+                self.config.epochs = (self.start_epoch - 1) + additional_epochs
+                logger.info(
+                    "Adjusted total epochs: Resuming from epoch %d with %d epochs requested -> Setting target total epochs to %d (training epochs %d to %d)",
+                    self.start_epoch - 1,
+                    additional_epochs,
+                    self.config.epochs,
+                    self.start_epoch,
+                    self.config.epochs,
+                )
 
-        if "val_loss" in checkpoint:
-            self.best_val_loss = float(checkpoint["val_loss"])
-        if "val_mAP_50" in checkpoint:
-            self.best_val_map = float(checkpoint["val_mAP_50"])
+            if "val_loss" in checkpoint:
+                self.best_val_loss = float(checkpoint["val_loss"])
+            if "val_mAP_50" in checkpoint:
+                self.best_val_map = float(checkpoint["val_mAP_50"])
 
         # Phục hồi / làm mới Learning Rate nếu kích hoạt reset_lr
         if reset_lr or (new_lr is not None) or (scheduler_type is not None):

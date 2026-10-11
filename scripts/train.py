@@ -69,6 +69,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--eval-map-interval", type=int, default=None, help="Interval (epochs) to evaluate mAP (default 5, 0 to disable)")
     parser.add_argument("--advanced-aug", action="store_true", default=None, help="Enable reflection-robust advanced augmentations")
     parser.add_argument("--no-advanced-aug", dest="advanced_aug", action="store_false", help="Disable advanced augmentations")
+    parser.add_argument("--new-run", action="store_true", help="Start a new MLflow run instead of resuming into the run ID stored in the checkpoint")
+    parser.add_argument("--weights-only", action="store_true", help="Only load model weights (fine-tuning mode). Starts epoch count from 1 and creates a new MLflow run")
     parser.add_argument("--dry-run", action="store_true", help="Quick run with 4 train batches and 2 val batches for testing")
 
     return parser.parse_args()
@@ -227,15 +229,18 @@ def main() -> None:
 
     resume_run_id = args.run_id
     if args.resume:
-        should_reset_lr = bool(args.reset_lr or (args.lr is not None) or (args.scheduler_type is not None))
+        should_reset_lr = bool(args.reset_lr or (args.lr is not None) or (args.scheduler_type is not None) or args.weights_only)
         start_epoch = trainer.load_checkpoint(
             args.resume,
             reset_lr=should_reset_lr,
             new_lr=args.lr,
             scheduler_type=args.scheduler_type,
+            weights_only=args.weights_only,
         )
         epochs = trainer.config.epochs
-        if not resume_run_id:
+
+        # Tự động resume run ID trừ khi người dùng yêu cầu tạo run mới (--new-run hoặc --weights-only)
+        if not resume_run_id and not args.new_run and not args.weights_only:
             try:
                 chkpt_dict = torch.load(args.resume, map_location="cpu", weights_only=False)
                 resume_run_id = chkpt_dict.get("mlflow_run_id")
@@ -243,6 +248,9 @@ def main() -> None:
                     logger.info("Auto-detected MLflow run ID to resume into: %s", resume_run_id)
             except Exception as e:
                 logger.debug("Could not read mlflow_run_id from checkpoint: %s", e)
+        elif args.new_run or args.weights_only:
+            logger.info("MLflow separate run requested (--new-run / --weights-only). Starting a brand new MLflow run.")
+            resume_run_id = None
 
     tags = {
         "model.family": "Faster R-CNN",
@@ -253,6 +261,10 @@ def main() -> None:
         "training.image_size": f"{image_size}x{image_size}",
         "training.advanced_aug": str(use_advanced_aug),
     }
+    if args.resume:
+        tags["resumed_from_checkpoint"] = str(args.resume)
+        if args.new_run or args.weights_only:
+            tags["is_forked_run"] = "true"
 
     # 5. Huấn luyện mô hình và log vào MLflow
     with tracker.run(
