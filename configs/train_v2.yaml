@@ -1,0 +1,42 @@
+seed: 42
+device: cuda
+epochs: 35
+batch_size: 2
+gradient_accumulation_steps: 2
+image_size: 512
+min_size: 512
+max_size: 512
+num_workers: 2
+
+# Model configuration
+model_name: faster_rcnn
+backbone: resnet50_fpn_v2
+pretrained: true
+trainable_backbone_layers: 3
+
+# Optimizer settings for V2 (tuned for ConvNorm Head)
+optimizer: SGD
+learning_rate: 0.002
+momentum: 0.9
+weight_decay: 0.0001
+backbone_lr_ratio: 0.1
+
+# Learning rate scheduler
+scheduler:
+  type: cosine
+  step_size: 5
+  gamma: 0.5
+
+# Acceleration & Memory Optimization (RTX 3050 friendly)
+use_amp: true
+clip_grad_norm: 10.0
+
+# Data Augmentation (Reflection-robust)
+use_advanced_aug: true
+
+# Checkpoints & Logging
+checkpoint_dir: artifacts/checkpoints/faster_rcnn_resnet50_fpn_v2_b2_ep35
+save_best_only: true
+log_interval: 10
+eval_map_interval: 5
+
