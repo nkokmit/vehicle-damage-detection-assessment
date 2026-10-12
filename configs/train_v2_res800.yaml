@@ -1,0 +1,43 @@
+seed: 42
+device: cuda
+epochs: 15
+batch_size: 1
+gradient_accumulation_steps: 4
+image_size: 800
+min_size: 800
+max_size: 800
+num_workers: 2
+
+# Model configuration
+model_name: faster_rcnn
+backbone: resnet50_fpn_v2
+pretrained: true
+trainable_backbone_layers: 3
+
+# Optimizer: conservative LR cho fine-tuning resolution cao
+# V2 BatchNorm nhạy cảm với LR - dùng 10x thấp hơn Phase 1 (0.002 -> 0.0002)
+optimizer: SGD
+learning_rate: 0.0002
+momentum: 0.9
+weight_decay: 0.0001
+backbone_lr_ratio: 0.1
+
+# Cosine annealing: 15 epoch, decay về eta_min=1e-6
+scheduler:
+  type: cosine
+  step_size: 5
+  gamma: 0.5
+
+# Acceleration & Memory (RTX 3050 safe: ~1050MB VRAM)
+use_amp: true
+clip_grad_norm: 10.0
+
+# Reflection-Robust Augmentation (giữ nguyên từ Phase 1)
+use_advanced_aug: true
+
+# Checkpoints & Logging
+checkpoint_dir: artifacts/checkpoints/faster_rcnn_resnet50_v2_res800_ft
+save_best_only: true
+log_interval: 10
+eval_map_interval: 2
+
