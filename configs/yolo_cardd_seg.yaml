@@ -1,0 +1,15 @@
+# Cấu hình dữ liệu CarDD cho Ultralytics YOLO Segmentation
+path: C:/code/vehicle-damage-detection-assessment/data/CarDD_YOLO
+train: images/train
+val: images/val
+test: images/test
+
+# 6 lớp tổn thương ngoại thất xe
+names:
+  0: dent
+  1: scratch
+  2: crack
+  3: glass shatter
+  4: lamp broken
+  5: tire flat
+

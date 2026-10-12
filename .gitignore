@@ -253,3 +253,7 @@ __marimo__/
 *.tiff
 *.webp
 *.gif
+
+# YOLO & PyTorch model weights
+*.pt
+/data/CarDD_YOLO/
