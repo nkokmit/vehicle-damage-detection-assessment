@@ -44,6 +44,7 @@ def load_yaml_config(path: Path) -> dict[str, Any]:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Train Faster R-CNN on CarDD dataset")
+    parser.add_argument("--model-name", type=str, default=None, choices=["faster_rcnn", "mask_rcnn"], help="Model architecture ('faster_rcnn' or 'mask_rcnn')")
     parser.add_argument("--config", type=str, default="configs/train.yaml", help="Path to training config YAML")
     parser.add_argument("--model-config", type=str, default="configs/model.yaml", help="Path to model config YAML")
     parser.add_argument("--device", type=str, default=None, help="Device to use ('cuda' or 'cpu')")
@@ -84,6 +85,7 @@ def main() -> None:
     model_yaml = load_yaml_config(PROJECT_ROOT / args.model_config)
 
     # Lấy giá trị cấu hình ưu tiên: CLI args > YAML config > default
+    model_name = args.model_name or train_yaml.get("model_name", model_yaml.get("model_name", "faster_rcnn"))
     device_str = args.device or train_yaml.get("device", "cuda" if torch.cuda.is_available() else "cpu")
     epochs = args.epochs or train_yaml.get("epochs", 40)
     batch_size = args.batch_size or train_yaml.get("batch_size", 2)
@@ -93,7 +95,7 @@ def main() -> None:
     lr = args.lr or train_yaml.get("learning_rate", 0.005)
     momentum = args.momentum or train_yaml.get("momentum", 0.9)
     weight_decay = args.weight_decay or train_yaml.get("weight_decay", 0.0005)
-    backbone = args.backbone or model_yaml.get("backbone", "resnet50_fpn")
+    backbone = args.backbone or train_yaml.get("backbone", model_yaml.get("backbone", "resnet50_fpn"))
     num_workers = args.num_workers if args.num_workers is not None else train_yaml.get("num_workers", 2)
 
     # Scheduler settings
@@ -126,6 +128,7 @@ def main() -> None:
     logger.info("=" * 65)
     logger.info("        VEHICLE DAMAGE DETECTION - TRAINING PIPELINE")
     logger.info("=" * 65)
+    logger.info("Model Architecture       : %s", model_name)
     logger.info("Device                   : %s (%s)", device, torch.cuda.get_device_name(0) if device.type == "cuda" else "CPU")
     logger.info("Backbone                 : %s", backbone)
     logger.info("Epochs                   : %d", epochs)
@@ -139,19 +142,22 @@ def main() -> None:
     logger.info("=" * 65)
 
     # 2. Xây dựng Dataset với image_size=(min_size, max_size)
-    logger.info("Loading CarDD dataset from: %s", args.cardd_dir)
+    load_masks = (model_name == "mask_rcnn")
+    logger.info("Loading CarDD dataset (load_masks=%s) from: %s", load_masks, args.cardd_dir)
     train_dataset = build_cardd_dataset(
         split="train",
         cardd_dir=args.cardd_dir,
         img_size=(image_size, image_size),
         use_augmentation=True,
         use_advanced_aug=use_advanced_aug,
+        load_masks=load_masks,
     )
     val_dataset = build_cardd_dataset(
         split="val",
         cardd_dir=args.cardd_dir,
         img_size=(image_size, image_size),
         use_augmentation=False,
+        load_masks=load_masks,
     )
 
     train_loader = build_dataloader(
@@ -167,10 +173,10 @@ def main() -> None:
         num_workers=num_workers,
     )
 
-    # 3. Khởi tạo Faster R-CNN Model với 7 classes và min_size=512, max_size=512
-    logger.info("Building Faster R-CNN with backbone: %s", backbone)
+    # 3. Khởi tạo Model với 7 classes và min_size=512, max_size=512
+    logger.info("Building %s with backbone: %s", model_name, backbone)
     model = create_model(
-        model_name="faster_rcnn",
+        model_name=model_name,
         backbone=backbone,
         num_classes=7,
         pretrained=True,
@@ -192,7 +198,7 @@ def main() -> None:
     )
     tracker = MLflowTracker(config=mlflow_config)
 
-    run_name = args.run_name or f"faster_rcnn_{backbone}_amp_accum_b{batch_size}_ep{epochs}"
+    run_name = args.run_name or f"{model_name}_{backbone}_amp_accum_b{batch_size}_ep{epochs}"
     checkpoint_dir = PROJECT_ROOT / "artifacts" / "checkpoints" / run_name
 
     trainer_config = TrainerConfig(
@@ -253,9 +259,9 @@ def main() -> None:
             resume_run_id = None
 
     tags = {
-        "model.family": "Faster R-CNN",
+        "model.family": "Mask R-CNN" if model_name == "mask_rcnn" else "Faster R-CNN",
         "model.backbone": backbone,
-        "task": "vehicle-damage-detection",
+        "task": "vehicle-damage-segmentation" if model_name == "mask_rcnn" else "vehicle-damage-detection",
         "training.amp": str(use_amp),
         "training.grad_accum": str(accum_steps),
         "training.image_size": f"{image_size}x{image_size}",
@@ -267,14 +273,15 @@ def main() -> None:
             tags["is_forked_run"] = "true"
 
     # 5. Huấn luyện mô hình và log vào MLflow
+    model_display_name = "Mask R-CNN" if model_name == "mask_rcnn" else "Faster R-CNN"
     with tracker.run(
         run_name=run_name,
         tags=tags,
-        description=f"Faster R-CNN {backbone} trained with AMP & Gradient Accumulation",
+        description=f"{model_display_name} {backbone} trained with AMP & Gradient Accumulation",
         run_id=resume_run_id,
     ):
         tracker.log_params({
-            "model_architecture": "faster_rcnn",
+            "model_architecture": model_name,
             "backbone": backbone,
             "num_classes": 7,
             "epochs": epochs,

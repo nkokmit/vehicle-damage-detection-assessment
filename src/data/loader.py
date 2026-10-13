@@ -15,6 +15,7 @@ def build_dataset(
     data_root: str | Path = "data/processed",
     annotation_file: str | Path | None = None,
     transforms: Callable[..., Any] | None = None,
+    load_masks: bool = False,
 ) -> VehicleDamageDataset:
     root_path = Path(data_root)
 
@@ -32,6 +33,7 @@ def build_dataset(
         root_dir=img_dir,
         annotation_file=ann_path,
         transforms=transforms,
+        load_masks=load_masks,
     )
 
 
@@ -41,6 +43,7 @@ def build_cardd_dataset(
     img_size: tuple[int, int] = (800, 800),
     use_augmentation: bool = True,
     use_advanced_aug: bool = True,
+    load_masks: bool = False,
 ) -> VehicleDamageDataset:
     cardd_path = Path(cardd_dir)
     img_dir = cardd_path / f"{split}2017"
@@ -55,6 +58,7 @@ def build_cardd_dataset(
         root_dir=img_dir,
         annotation_file=ann_file,
         transforms=transforms,
+        load_masks=load_masks,
     )
 
 

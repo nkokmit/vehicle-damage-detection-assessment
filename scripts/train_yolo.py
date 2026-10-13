@@ -1,11 +1,4 @@
-"""Script huấn luyện YOLOv8/YOLOv11 Instance Segmentation trên CarDD dataset.
-
-Tích hợp tự động MLflow tracking vào SQLite db (sqlite:///mlflow.db)
-giúp so sánh trực tiếp với các run Faster R-CNN (ResNet-50 FPN V1 và V2).
-"""
-
 from __future__ import annotations
-
 import argparse
 import json
 import logging

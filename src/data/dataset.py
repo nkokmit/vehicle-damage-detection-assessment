@@ -64,6 +64,7 @@ class VehicleDamageDataset(Dataset):
         transforms: Callable[..., Any] | None = None,
         return_sample_obj: bool = False,
         filter_empty: bool = False,
+        load_masks: bool = False,
     ) -> None:
         """Initialize the dataset.
 
@@ -74,12 +75,14 @@ class VehicleDamageDataset(Dataset):
             return_sample_obj: If True, __getitem__ returns a DatasetSample dataclass
                                instead of (image, target) tuple.
             filter_empty: If True, exclude images with 0 annotations.
+            load_masks: If True, load and transform binary segmentation masks for Mask R-CNN.
         """
         self.root_dir = Path(root_dir)
         self.annotation_file = Path(annotation_file)
         self.transforms = transforms
         self.return_sample_obj = return_sample_obj
         self.filter_empty = filter_empty
+        self.load_masks = load_masks
 
         self.samples: list[DatasetSample] = []
         self.images_info: list[dict[str, Any]] = []
@@ -193,6 +196,7 @@ class VehicleDamageDataset(Dataset):
         labels_list: list[int] = []
         areas_list: list[float] = []
         iscrowd_list: list[int] = []
+        masks_list: list[np.ndarray] = []
 
         for ann in raw_anns:
             # COCO bbox: [x, y, width, height]
@@ -217,18 +221,35 @@ class VehicleDamageDataset(Dataset):
             areas_list.append(area)
             iscrowd_list.append(iscrowd)
 
+            # Tạo binary mask từ polygon segmentation cho Mask R-CNN
+            if self.load_masks:
+                mask = np.zeros((h_orig, w_orig), dtype=np.uint8)
+                seg = ann.get("segmentation", [])
+                if isinstance(seg, list):
+                    for poly in seg:
+                        if len(poly) >= 6:
+                            pts = np.array(poly, dtype=np.int32).reshape(-1, 2)
+                            cv2.fillPoly(mask, [pts], 1)
+                masks_list.append(mask)
+
         # Áp dụng Data Transforms / Augmentations
         if self.transforms is not None:
             if hasattr(self.transforms, "processors") or hasattr(self.transforms, "__call__"):
-                try: # nhánh chính thực hiện với Albumentations cần truyền 3 tham số thay vì chỉ 1 tham số ảnh
-                    transformed = self.transforms(
-                        image=image,
-                        bboxes=boxes_list,
-                        category_ids=labels_list,
-                    )
+                try: # nhánh chính thực hiện với Albumentations
+                    transform_kwargs: dict[str, Any] = {
+                        "image": image,
+                        "bboxes": boxes_list,
+                        "category_ids": labels_list,
+                    }
+                    if self.load_masks and len(masks_list) > 0:
+                        transform_kwargs["masks"] = masks_list
+
+                    transformed = self.transforms(**transform_kwargs)
                     image = transformed["image"]
                     boxes_list = [list(b) for b in transformed["bboxes"]]
                     labels_list = [int(cid) for cid in transformed["category_ids"]]
+                    if self.load_masks and len(masks_list) > 0:
+                        masks_list = transformed.get("masks", [])
                 except TypeError: # nhánh dự phòng nếu transform chỉ nhận 1 tham số (ví dụ: ToTensorV2)
                     image = self.transforms(image)
 
@@ -240,7 +261,6 @@ class VehicleDamageDataset(Dataset):
         else:
             image_tensor = torch.as_tensor(image).permute(2, 0, 1).float()
 
-        # ảnh ban đầu (H, W, C) numpy array hoặc pil object không rõ ràng cần chuyển sang pytorch hoặc đổi trục sang (C,H,W) v
         # Tạo Tensor cho Bounding Boxes và Labels
         if len(boxes_list) > 0:
             boxes_tensor = torch.as_tensor(boxes_list, dtype=torch.float32).reshape(-1, 4)
@@ -262,6 +282,15 @@ class VehicleDamageDataset(Dataset):
             "orig_size": torch.tensor([h_orig, w_orig], dtype=torch.int64),
             "file_name": file_name,
         }
+
+        # Bổ sung masks tensor cho Mask R-CNN nếu kích hoạt load_masks
+        if self.load_masks:
+            curr_h = int(image_tensor.shape[1])
+            curr_w = int(image_tensor.shape[2])
+            if len(masks_list) > 0 and len(boxes_list) == len(masks_list):
+                target["masks"] = torch.as_tensor(np.stack(masks_list), dtype=torch.uint8)
+            else:
+                target["masks"] = torch.zeros((len(boxes_list), curr_h, curr_w), dtype=torch.uint8)
 
         if self.return_sample_obj:
             return DatasetSample(image_path=img_path, target=target)

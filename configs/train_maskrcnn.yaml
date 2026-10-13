@@ -1,0 +1,38 @@
+model_name: mask_rcnn
+backbone: resnet50_fpn_v2
+seed: 42
+device: cuda
+epochs: 35
+batch_size: 2
+image_size: 512
+num_workers: 2
+
+# Model image sizing (min and max)
+min_size: 512
+max_size: 512
+
+# Optimizer settings
+optimizer: SGD
+learning_rate: 0.002
+momentum: 0.9
+weight_decay: 0.0005
+backbone_lr_ratio: 0.1
+
+# Learning rate scheduler ('step' or 'cosine')
+scheduler:
+  type: cosine
+  step_size: 5
+  gamma: 0.5
+
+# Acceleration & Memory Optimization (RTX 3050 4GB VRAM safe)
+use_amp: true
+gradient_accumulation_steps: 2
+clip_grad_norm: 10.0
+use_advanced_aug: true
+
+# Checkpoints & Logging
+checkpoint_dir: artifacts/checkpoints/mask_rcnn_resnet50_fpn_v2
+save_best_only: true
+log_interval: 10
+eval_map_interval: 5
+

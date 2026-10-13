@@ -22,3 +22,20 @@ source .venv/bin/activate
 pip install -r requirements.txt
 pytest -q
 ```
+
+mflow:
+mlflow ui --backend-store-uri sqlite:///mlflow.db --port 5000
+
+train:
+.\env\Scripts\python.exe scripts/train.py `
+  --config configs/train_res800.yaml `
+  --resume artifacts/checkpoints/faster_rcnn_resnet50_fpn_amp_accum_b2_ep40/best_map_model.pth `
+  --reset-lr `
+  --lr 0.0003 `
+  --scheduler-type cosine `
+  --epochs 20
+
+train mask rcnn:
+.\env\Scripts\python.exe scripts/train.py `
+  --config configs/train_maskrcnn.yaml `
+  --model-name mask_rcnn
