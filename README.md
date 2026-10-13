@@ -35,7 +35,8 @@ train:
   --scheduler-type cosine `
   --epochs 20
 
-train mask rcnn:
 .\env\Scripts\python.exe scripts/train.py `
   --config configs/train_maskrcnn.yaml `
-  --model-name mask_rcnn
+  --resume artifacts/checkpoints/mask_rcnn_resnet50_fpn_v2_amp_accum_b2_ep35/latest_model.pth `
+  --run-name "mask_rcnn_resnet50_fpn_v2_amp_accum_b2_ep35" `
+  --epochs 35
