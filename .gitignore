@@ -227,16 +227,17 @@ __marimo__/
 
 /data/annotations/*.bak
 
+
 /artifacts/*
 !/artifacts/checkpoints/
 !/artifacts/predictions/
 !/artifacts/reports/
+
 /artifacts/checkpoints/*
-/artifacts/predictions/*
-/artifacts/reports/*
 !/artifacts/checkpoints/.gitkeep
+
+/artifacts/predictions/*
 !/artifacts/predictions/.gitkeep
-!/artifacts/reports/.gitkeep
 
 /mlruns/*
 !/mlruns/.gitkeep
